@@ -8,24 +8,29 @@ TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🚗 Auto Radar запущен!\n\n"
-        "Я буду искать интересные автомобили для перепродажи.\n\n"
-        "Пока это тестовая версия."
-    )
-
-
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Доступные команды:\n\n"
-        "/start — запустить бота\n"
+        "Я ищу автомобили с потенциалом для перепродажи.\n\n"
+        "Команды:\n"
         "/help — помощь\n"
         "/cars — поиск автомобилей"
     )
 
 
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "🔎 Auto Radar\n\n"
+        "Сейчас доступна тестовая система поиска.\n\n"
+        "/cars — начать поиск автомобиля"
+    )
+
+
 async def cars(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🔎 Модуль поиска автомобилей пока подключается.\n"
-        "Следующим этапом подключим источники объявлений."
+        "🚗 Поиск автомобиля\n\n"
+        "Напиши параметры в одном сообщении.\n\n"
+        "Например:\n"
+        "Kia Rio, до 700 000 ₽, от 2016 года, "
+        "пробег до 200 000 км, Москва\n\n"
+        "Я подготовлю поиск по этим параметрам."
     )
 
 
@@ -40,6 +45,7 @@ def main():
     app.add_handler(CommandHandler("cars", cars))
 
     print("Auto Radar Bot запущен")
+
     app.run_polling()
 
 
