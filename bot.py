@@ -34,7 +34,7 @@ def run_web():
 
 def get_avito_ads():
 
-    print("===== AVITO SMART PARSER START =====")
+    print("===== AVITO DEEP DIAGNOSTIC START =====")
 
     headers = {
         "User-Agent": (
@@ -56,6 +56,7 @@ def get_avito_ads():
         print("AVITO STATUS:", response.status_code)
         print("AVITO HTML LENGTH:", len(text))
 
+        # Ищем ID объявлений
         item_ids = re.findall(
             r'itemId[=:]\\?["\']?(\d{8,})',
             text
@@ -64,139 +65,226 @@ def get_avito_ads():
         unique_ids = []
 
         for item_id in item_ids:
+
             if item_id not in unique_ids:
                 unique_ids.append(item_id)
 
         print("UNIQUE ITEM IDS:", len(unique_ids))
 
-        for number, item_id in enumerate(unique_ids[:5], start=1):
+        # Берём первые 3 объявления
+        for number, item_id in enumerate(
+            unique_ids[:3],
+            start=1
+        ):
 
             print("")
-            print("========== AD", number, "==========")
+            print("========================================")
+            print("AD:", number)
             print("ID:", item_id)
+            print("========================================")
 
-            position = text.find(item_id)
+            # Ищем ВСЕ позиции этого ID
+            positions = [
+                match.start()
+                for match in re.finditer(
+                    re.escape(item_id),
+                    text
+                )
+            ]
 
-            if position == -1:
-                print("BLOCK NOT FOUND")
+            print("ID POSITIONS:", positions[:20])
+            print("TOTAL POSITIONS:", len(positions))
+
+            if not positions:
                 continue
 
-            block_start = max(0, position - 8000)
-            block_end = min(len(text), position + 20000)
+            # Берём первую позицию
+            position = positions[0]
 
-            block = text[block_start:block_end]
+            print("FIRST POSITION:", position)
 
-            title = None
-
-            title_patterns = [
-                r'"imageAlt":"([^"]+)"',
-                r'"title":"([^"]+)"',
-                r'\\"imageAlt\\":\\"([^"]+)\\"',
-            ]
-
-            for pattern in title_patterns:
-
-                match = re.search(
-                    pattern,
-                    block
-                )
-
-                if match:
-                    title = match.group(1)
-                    break
-
-            if title:
-
-                title = title.replace(
-                    "\\u0026",
-                    "&"
-                )
-
-                title = title.replace(
-                    "\\/",
-                    "/"
-                )
-
-            else:
-
-                title = "НЕ НАЙДЕНО"
-
-            print("TITLE:", title)
-
-            price = None
-
-            price_patterns = [
-                r'"current":"([^"]+)"',
-                r'\\"current\\":\\"([^"]+)\\"',
-                r'"title":"([\d\s]+)\s*₽"',
-            ]
-
-            for pattern in price_patterns:
-
-                match = re.search(
-                    pattern,
-                    block
-                )
-
-                if match:
-                    price = match.group(1)
-                    break
-
-            if price:
-
-                price = price.replace(
-                    "\\u00a0",
-                    " "
-                )
-
-            else:
-
-                price = "НЕ НАЙДЕНА"
-
-            print("PRICE:", price)
-
-            year_match = re.search(
-                r'(20\d{2})',
-                title
+            # Показываем большой кусок HTML
+            block_start = max(
+                0,
+                position - 15000
             )
 
-            if year_match:
-                year = year_match.group(1)
-            else:
-                year = "НЕ НАЙДЕН"
+            block_end = min(
+                len(text),
+                position + 30000
+            )
 
-            print("YEAR:", year)
+            block = text[
+                block_start:block_end
+            ]
 
-            mileage_match = re.search(
-                r'([\d\s]+)\s*км',
-                title,
+            print("BLOCK LENGTH:", len(block))
+
+            # --------------------------------
+            # ИЩЕМ IMAGE ALT
+            # --------------------------------
+
+            print("")
+            print("----- IMAGE ALT -----")
+
+            image_alt_matches = re.findall(
+                r'"imageAlt"\s*:\s*"([^"]+)"',
+                block
+            )
+
+            print(
+                "IMAGE ALT COUNT:",
+                len(image_alt_matches)
+            )
+
+            for value in image_alt_matches[:10]:
+
+                print(
+                    "IMAGE ALT:",
+                    value
+                )
+
+            # --------------------------------
+            # ИЩЕМ TITLE
+            # --------------------------------
+
+            print("")
+            print("----- TITLE -----")
+
+            title_matches = re.findall(
+                r'"title"\s*:\s*"([^"]+)"',
+                block
+            )
+
+            print(
+                "TITLE COUNT:",
+                len(title_matches)
+            )
+
+            for value in title_matches[:10]:
+
+                print(
+                    "TITLE:",
+                    value
+                )
+
+            # --------------------------------
+            # ИЩЕМ PRICE
+            # --------------------------------
+
+            print("")
+            print("----- PRICE -----")
+
+            price_matches = re.findall(
+                r'"current"\s*:\s*"([^"]+)"',
+                block
+            )
+
+            print(
+                "PRICE CURRENT COUNT:",
+                len(price_matches)
+            )
+
+            for value in price_matches[:10]:
+
+                print(
+                    "PRICE:",
+                    value
+                )
+
+            # --------------------------------
+            # ИЩЕМ 2016-2026 ГОДЫ
+            # --------------------------------
+
+            print("")
+            print("----- YEARS -----")
+
+            years = re.findall(
+                r'\b20(?:1[6-9]|2[0-6])\b',
+                block
+            )
+
+            print(
+                "YEARS FOUND:",
+                years[:30]
+            )
+
+            # --------------------------------
+            # ИЩЕМ ПРОБЕГ
+            # --------------------------------
+
+            print("")
+            print("----- MILEAGE -----")
+
+            mileage = re.findall(
+                r'(\d[\d\s]{2,})\s*км',
+                block,
                 re.IGNORECASE
             )
 
-            if mileage_match:
-                mileage = mileage_match.group(1)
-            else:
-                mileage = "НЕ НАЙДЕН"
-
-            print("MILEAGE:", mileage)
-
-            url = (
-                "https://www.avito.ru/"
-                "moskva/avtomobili/"
-                + item_id
+            print(
+                "MILEAGE FOUND:",
+                mileage[:30]
             )
 
-            print("URL:", url)
+            # --------------------------------
+            # ИЩЕМ ФРАЗЫ С KIA RIO
+            # --------------------------------
+
+            print("")
+            print("----- KIA RIO -----")
+
+            rio_matches = re.findall(
+                r'.{0,100}Kia Rio.{0,200}',
+                block,
+                re.IGNORECASE
+            )
+
+            print(
+                "KIA RIO COUNT:",
+                len(rio_matches)
+            )
+
+            for value in rio_matches[:10]:
+
+                print(
+                    "RIO:",
+                    value
+                )
+
+            # --------------------------------
+            # ИЩЕМ ЦЕНЫ С ₽
+            # --------------------------------
+
+            print("")
+            print("----- RUBLE PRICES -----")
+
+            ruble_prices = re.findall(
+                r'\d[\d\s]{2,}\s*₽',
+                block
+            )
+
+            print(
+                "RUBLE PRICE COUNT:",
+                len(ruble_prices)
+            )
+
+            for value in ruble_prices[:20]:
+
+                print(
+                    "RUBLE PRICE:",
+                    value
+                )
 
         print("")
-        print("===== AVITO SMART PARSER END =====")
+        print("===== AVITO DEEP DIAGNOSTIC END =====")
 
         return unique_ids
 
     except Exception as e:
 
         print(
-            "AVITO PARSER ERROR:",
+            "AVITO ERROR:",
             repr(e)
         )
 
@@ -320,7 +408,10 @@ def extract_parameters(text):
     }
 
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def start(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
     await update.message.reply_text(
         "🚗 AUTO RADAR\n\n"
@@ -333,7 +424,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def help_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
     await update.message.reply_text(
         "🔎 AUTO RADAR\n\n"
@@ -345,7 +439,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-async def radar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def radar(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
     context.user_data["creating_radar"] = True
 
@@ -360,12 +457,21 @@ async def radar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-async def radars(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def radars(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
-    user_id = str(update.effective_user.id)
+    user_id = str(
+        update.effective_user.id
+    )
 
     all_radars = load_radars()
-    user_radars = all_radars.get(user_id, [])
+
+    user_radars = all_radars.get(
+        user_id,
+        []
+    )
 
     if not user_radars:
 
@@ -383,8 +489,13 @@ async def radars(update: Update, context: ContextTypes.DEFAULT_TYPE):
         start=1
     ):
 
-        price = radar_data.get("price")
-        mileage = radar_data.get("mileage")
+        price = radar_data.get(
+            "price"
+        )
+
+        mileage = radar_data.get(
+            "mileage"
+        )
 
         price_text = (
             f"{price:,}".replace(",", " ")
@@ -405,29 +516,46 @@ async def radars(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📍 {radar_data.get('city', '—')}\n\n"
         )
 
-    await update.message.reply_text(message)
+    await update.message.reply_text(
+        message
+    )
 
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_message(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
     text = update.message.text.strip()
 
-    if context.user_data.get("creating_radar"):
+    if context.user_data.get(
+        "creating_radar"
+    ):
 
-        radar_data = extract_parameters(text)
+        radar_data = extract_parameters(
+            text
+        )
 
-        user_id = str(update.effective_user.id)
+        user_id = str(
+            update.effective_user.id
+        )
 
         all_radars = load_radars()
 
         if user_id not in all_radars:
             all_radars[user_id] = []
 
-        all_radars[user_id].append(radar_data)
+        all_radars[user_id].append(
+            radar_data
+        )
 
-        save_radars(all_radars)
+        save_radars(
+            all_radars
+        )
 
-        context.user_data["creating_radar"] = False
+        context.user_data[
+            "creating_radar"
+        ] = False
 
         price = radar_data["price"]
         mileage = radar_data["mileage"]
@@ -464,6 +592,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
 
     if not TOKEN:
+
         raise RuntimeError(
             "TELEGRAM_BOT_TOKEN не задан"
         )
@@ -483,29 +612,44 @@ def main():
     )
 
     telegram_app.add_handler(
-        CommandHandler("start", start)
+        CommandHandler(
+            "start",
+            start
+        )
     )
 
     telegram_app.add_handler(
-        CommandHandler("help", help_command)
+        CommandHandler(
+            "help",
+            help_command
+        )
     )
 
     telegram_app.add_handler(
-        CommandHandler("radar", radar)
+        CommandHandler(
+            "radar",
+            radar
+        )
     )
 
     telegram_app.add_handler(
-        CommandHandler("radars", radars)
+        CommandHandler(
+            "radars",
+            radars
+        )
     )
 
     telegram_app.add_handler(
         MessageHandler(
-            filters.TEXT & ~filters.COMMAND,
+            filters.TEXT
+            & ~filters.COMMAND,
             handle_message
         )
     )
 
-    print("AUTO RADAR BOT запущен")
+    print(
+        "AUTO RADAR BOT запущен"
+    )
 
     telegram_app.run_polling()
 
