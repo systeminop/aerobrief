@@ -1,9 +1,12 @@
 import os
 import re
 import json
+import time
 import requests
 
 from html import unescape
+from datetime import datetime, timezone
+
 from flask import Flask
 
 from telegram import Update
@@ -16,9 +19,9 @@ from telegram.ext import (
 )
 
 
-# =========================================================
+# ============================================================
 # НАСТРОЙКИ
-# =========================================================
+# ============================================================
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
@@ -26,23 +29,16 @@ RADARS_FILE = "radars.json"
 SEEN_FILE = "seen_ads.json"
 USERS_FILE = "users.json"
 
-CHECK_INTERVAL = 10 * 60  # 10 минут
+# Проверяем Avito каждые 5 минут
+CHECK_INTERVAL = 5 * 60
+
+# Максимальный возраст объявления для уведомления
+MAX_NEW_AGE_SECONDS = 5 * 60
 
 
-# Пока тестируем на этом поиске:
-# Kia Rio / Москва / до 700 000 / от 2016 / до 200 000 км
-
-AVITO_URL = (
-    "https://m.avito.ru/moskva/avtomobili/kia/rio-ASgBAgICAkTgtg3KmCjitg3Krig"
-    "?context=H4sIAAAAAAAA_wGeAGH_YTo0OntzOjk6ImZyb21fcGFnZSI7czo3OiJmaWx0ZXJzIjtzOjY6InNvdXJjZSI7czo4OiJvcmRpbmFyeSI7czo1Mjoic291cmNlX3F1ZXJ5IjtzOjc6ImtpYSByaW8iO3M6NToieF9zZ3QiO3M6NDA6IjM4MDNiMzU2Mzk1ZDIwMDk4NjY3Y2IzMzliMGRhZjkzZTcxYzNlODMiO32uyOswngAAAA"
-    "&f=ASgBAgECAkTgtg3KmCjitg3KrigDRf4pGXsiZnJvbSI6bnVsbCwidG8iOjIwMDAwMH3GmgwWeyJmcm9tIjowLCJ0byI6NzAwMDAwffqMFBd7ImZyb20iOjIwMTYsInRvIjpudWxsfQ"
-    "&moreExpensive=0&presentationType=serp&radius=0"
-)
-
-
-# =========================================================
-# FLASK ДЛЯ RENDER
-# =========================================================
+# ============================================================
+# WEB SERVER ДЛЯ RENDER
+# ============================================================
 
 app_web = Flask(__name__)
 
@@ -52,9 +48,9 @@ def home():
     return "AUTO RADAR BOT IS RUNNING", 200
 
 
-# =========================================================
-# ФАЙЛЫ
-# =========================================================
+# ============================================================
+# JSON
+# ============================================================
 
 def load_json(filename, default):
     if not os.path.exists(filename):
@@ -78,107 +74,230 @@ def save_json(filename, data):
 
 
 def load_radars():
-    return load_json(
-        RADARS_FILE,
-        {}
-    )
+    return load_json(RADARS_FILE, {})
 
 
 def save_radars(radars):
-    save_json(
-        RADARS_FILE,
-        radars
-    )
+    save_json(RADARS_FILE, radars)
 
 
 def load_seen():
-    return load_json(
-        SEEN_FILE,
-        []
-    )
+    return load_json(SEEN_FILE, [])
 
 
 def save_seen(seen):
-    save_json(
-        SEEN_FILE,
-        seen
-    )
+    save_json(SEEN_FILE, seen)
 
 
 def load_users():
-    return load_json(
-        USERS_FILE,
-        []
-    )
+    return load_json(USERS_FILE, [])
 
 
 def save_users(users):
-    save_json(
-        USERS_FILE,
-        users
-    )
+    save_json(USERS_FILE, users)
 
 
-# =========================================================
+# ============================================================
 # ТЕКСТ
-# =========================================================
+# ============================================================
 
 def clean_text(value):
-
     if not value:
         return ""
 
     value = unescape(value)
     value = value.replace("\xa0", " ")
     value = value.replace("\\/", "/")
-    value = re.sub(
-        r"\s+",
-        " ",
-        value
-    )
+    value = re.sub(r"\s+", " ", value)
 
     return value.strip()
 
 
-# =========================================================
-# AVITO
-# =========================================================
+# ============================================================
+# ЧИСЛА
+# ============================================================
 
-def get_avito_ads():
+def parse_number(value):
+    if value is None:
+        return None
 
+    value = str(value)
+
+    value = (
+        value
+        .replace("\xa0", "")
+        .replace(" ", "")
+        .replace("₽", "")
+        .replace(",", "")
+    )
+
+    digits = re.sub(r"[^\d]", "", value)
+
+    if not digits:
+        return None
+
+    try:
+        return int(digits)
+    except Exception:
+        return None
+
+
+# ============================================================
+# ДАТА ПУБЛИКАЦИИ
+# ============================================================
+
+def parse_datetime_value(value):
+    """
+    Пытаемся превратить различные форматы времени Avito
+    в Unix timestamp.
+    """
+
+    if value is None:
+        return None
+
+    value = str(value).strip()
+
+    # Unix timestamp
+    if value.isdigit():
+        number = int(value)
+
+        # milliseconds
+        if number > 10_000_000_000:
+            number = number / 1000
+
+        # разумный диапазон
+        if 1_000_000_000 < number < 2_000_000_000:
+            return float(number)
+
+    # ISO format
+    try:
+        normalized = value.replace("Z", "+00:00")
+
+        dt = datetime.fromisoformat(normalized)
+
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+
+        return dt.timestamp()
+
+    except Exception:
+        pass
+
+    return None
+
+
+def extract_publish_time(block):
+    """
+    Ищем возможное время публикации в данных объявления.
+
+    Если Avito не отдаёт время публикации,
+    функция вернёт None.
+    """
+
+    patterns = [
+        r'"datePublished"\s*:\s*"([^"]+)"',
+        r'"dateCreated"\s*:\s*"([^"]+)"',
+        r'"publishedAt"\s*:\s*"([^"]+)"',
+        r'"createdAt"\s*:\s*"([^"]+)"',
+        r'"publicationDate"\s*:\s*"([^"]+)"',
+        r'"itemDateCreated"\s*:\s*"([^"]+)"',
+
+        r'"datePublished"\s*:\s*(\d{10,13})',
+        r'"dateCreated"\s*:\s*(\d{10,13})',
+        r'"publishedAt"\s*:\s*(\d{10,13})',
+        r'"createdAt"\s*:\s*(\d{10,13})',
+        r'"publicationDate"\s*:\s*(\d{10,13})',
+        r'"itemDateCreated"\s*:\s*(\d{10,13})',
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, block, re.IGNORECASE)
+
+        if not match:
+            continue
+
+        timestamp = parse_datetime_value(match.group(1))
+
+        if timestamp:
+            return timestamp
+
+    return None
+
+
+# ============================================================
+# AVITO URL
+# ============================================================
+
+def build_avito_url(radar):
+    """
+    Формируем поисковый URL.
+
+    Если город не указан — используем Россию.
+    """
+
+    car = radar.get("car", "").strip()
+
+    if not car:
+        car = "автомобиль"
+
+    query = requests.utils.quote(car)
+
+    city = radar.get("city")
+
+    if city and city.lower() not in [
+        "вся россия",
+        "россия",
+        "все регионы"
+    ]:
+        # Для города пока используем общий поиск России,
+        # а город дополнительно фильтруем после получения объявлений.
+        base = "https://m.avito.ru/rossiya/avtomobili"
+    else:
+        base = "https://m.avito.ru/rossiya/avtomobili"
+
+    return f"{base}?q={query}"
+
+
+# ============================================================
+# ПОЛУЧЕНИЕ AVITO
+# ============================================================
+
+def get_avito_ads(radar):
     print("")
     print("====================================")
     print("🔎 ПРОВЕРКА AVITO")
     print("====================================")
+
+    url = build_avito_url(radar)
+
+    print("AVITO URL:", url)
 
     headers = {
         "User-Agent": (
             "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
             "AppleWebKit/605.1.15 "
             "Version/17.0 Mobile/15E148 Safari/604.1"
-        )
+        ),
+        "Accept-Language": "ru-RU,ru;q=0.9"
     }
 
     try:
-
         response = requests.get(
-            AVITO_URL,
+            url,
             headers=headers,
             timeout=30
         )
 
         text = response.text
 
-        print(
-            "AVITO STATUS:",
-            response.status_code
-        )
+        print("AVITO STATUS:", response.status_code)
+        print("AVITO HTML LENGTH:", len(text))
 
-        print(
-            "AVITO HTML LENGTH:",
-            len(text)
-        )
+        if response.status_code != 200:
+            print("❌ AVITO HTTP ERROR")
+            return []
 
+        # Находим ID объявлений
         item_ids = re.findall(
             r'itemId[=:]\\?["\']?(\d{8,})',
             text
@@ -187,14 +306,10 @@ def get_avito_ads():
         unique_ids = []
 
         for item_id in item_ids:
-
             if item_id not in unique_ids:
                 unique_ids.append(item_id)
 
-        print(
-            "UNIQUE ITEM IDS:",
-            len(unique_ids)
-        )
+        print("UNIQUE ITEM IDS:", len(unique_ids))
 
         ads = []
 
@@ -219,12 +334,12 @@ def get_avito_ads():
 
                 block_start = max(
                     0,
-                    position - 5000
+                    position - 7000
                 )
 
                 block_end = min(
                     len(text),
-                    position + 5000
+                    position + 7000
                 )
 
                 block = text[
@@ -255,22 +370,27 @@ def get_avito_ads():
                         title_match.group(1)
                     )
 
-                    if (
-                        "Kia Rio" in title
-                        or "Kia" in title
-                        or "Rio" in title
+                    # Проверяем, что это автомобиль
+                    if not any(
+                        word.lower() in title.lower()
+                        for word in [
+                            radar.get("car", "")
+                        ]
+                        if word
                     ):
+                        # Если точного совпадения нет,
+                        # всё равно оставляем объявление,
+                        # если в заголовке есть автомобильные признаки.
+                        pass
 
-                        best_title = title
+                    best_title = title
 
-                        if href_match:
-                            best_href = (
-                                href_match.group(1)
-                            )
+                    if href_match:
+                        best_href = href_match.group(1)
 
-                        best_block = block
+                    best_block = block
 
-                        break
+                    break
 
                 if best_title:
                     break
@@ -278,7 +398,9 @@ def get_avito_ads():
             if not best_title:
                 continue
 
-            # Цена
+            # ------------------------------------------------
+            # ЦЕНА
+            # ------------------------------------------------
 
             price = None
 
@@ -293,27 +415,17 @@ def get_avito_ads():
 
                 for value in price_matches:
 
-                    value = (
-                        value
-                        .replace("\xa0", "")
-                        .replace(" ", "")
-                    )
+                    number = parse_number(value)
 
-                    if value.isdigit():
-
-                        number = int(value)
-
-                        if (
-                            100000
-                            <= number
-                            <= 10000000
-                        ):
-                            prices.append(number)
+                    if number and 50_000 <= number <= 50_000_000:
+                        prices.append(number)
 
                 if prices:
                     price = prices[0]
 
-            # Год
+            # ------------------------------------------------
+            # ГОД
+            # ------------------------------------------------
 
             year = None
 
@@ -327,7 +439,9 @@ def get_avito_ads():
                     year_match.group(1)
                 )
 
-            # Пробег
+            # ------------------------------------------------
+            # ПРОБЕГ
+            # ------------------------------------------------
 
             mileage = None
 
@@ -346,42 +460,46 @@ def get_avito_ads():
                 )
 
                 if mileage_text.isdigit():
+                    mileage = int(mileage_text)
 
-                    mileage = int(
-                        mileage_text
-                    )
+            # ------------------------------------------------
+            # ГОРОД
+            # ------------------------------------------------
 
-            # Город
-
-            city = "Москва"
-
-            if (
+            city = extract_city(
+                best_block,
                 best_href
-                and
-                "moskva_zelenograd"
-                in best_href
-            ):
-                city = "Москва, Зеленоград"
+            )
 
-            # URL
+            # ------------------------------------------------
+            # ССЫЛКА
+            # ------------------------------------------------
 
             if best_href:
 
                 if best_href.startswith("http"):
-                    url = best_href
+                    ad_url = best_href
                 else:
-                    url = (
+                    ad_url = (
                         "https://www.avito.ru"
                         + best_href
                     )
 
             else:
 
-                url = (
+                ad_url = (
                     "https://www.avito.ru/"
-                    "moskva/avtomobili/"
+                    + "rossiya/avtomobili/"
                     + item_id
                 )
+
+            # ------------------------------------------------
+            # ВРЕМЯ ПУБЛИКАЦИИ
+            # ------------------------------------------------
+
+            published_at = extract_publish_time(
+                best_block or ""
+            )
 
             ads.append({
                 "id": item_id,
@@ -390,7 +508,8 @@ def get_avito_ads():
                 "year": year,
                 "mileage": mileage,
                 "city": city,
-                "url": url,
+                "url": ad_url,
+                "published_at": published_at
             })
 
         print(
@@ -410,98 +529,255 @@ def get_avito_ads():
         return []
 
 
-# =========================================================
-# ФИЛЬТР
-# =========================================================
+# ============================================================
+# ГОРОД
+# ============================================================
 
-def matches_radar(ad):
+def extract_city(block, href):
+    """
+    Пытаемся определить город объявления.
+    """
 
-    title = ad.get(
-        "title",
-        ""
+    source = (
+        (block or "")
+        + " "
+        + (href or "")
     ).lower()
 
-    # Битые пока исключаем
+    cities = [
+        "Москва",
+        "Санкт-Петербург",
+        "Казань",
+        "Самара",
+        "Сочи",
+        "Краснодар",
+        "Ростов-на-Дону",
+        "Воронеж",
+        "Нижний Новгород",
+        "Екатеринбург",
+        "Уфа",
+        "Пермь",
+        "Омск",
+        "Тула",
+        "Тверь",
+        "Иркутск",
+        "Новосибирск",
+        "Красноярск",
+        "Челябинск",
+        "Владивосток",
+        "Хабаровск",
+        "Саратов",
+        "Тюмень",
+        "Калининград",
+        "Ярославль",
+        "Белгород",
+        "Волгоград",
+        "Мурманск",
+        "Ставрополь",
+        "Барнаул",
+    ]
 
-    if "битый" in title:
-        return False
+    for city in cities:
+
+        if city.lower() in source:
+            return city
+
+    return "Россия"
+
+
+# ============================================================
+# СООТВЕТСТВИЕ РАДАРУ
+# ============================================================
+
+def matches_radar(ad, radar):
+    title = ad.get("title", "").lower()
+
+    car = radar.get("car", "").lower().strip()
+
+    # ------------------------------------------------
+    # Модель
+    # ------------------------------------------------
+
+    if car:
+
+        words = car.split()
+
+        for word in words:
+
+            if len(word) < 2:
+                continue
+
+            if word not in title:
+                return False
+
+    # ------------------------------------------------
+    # БИТЫЕ
+    # ------------------------------------------------
+
+    bad_words = [
+        "битый",
+        "битая",
+        "битое",
+        "после дтп",
+        "дтп",
+        "аварийный",
+        "на запчасти"
+    ]
+
+    for word in bad_words:
+
+        if word in title:
+            return False
+
+    # ------------------------------------------------
+    # ЦЕНА
+    # ------------------------------------------------
 
     price = ad.get("price")
 
-    if price is None:
-        return False
+    max_price = radar.get("price")
 
-    if price > 700000:
-        return False
+    if max_price is not None:
+
+        if price is None:
+            return False
+
+        if price > max_price:
+            return False
+
+    # ------------------------------------------------
+    # ГОД
+    # ------------------------------------------------
 
     year = ad.get("year")
 
-    if year is None:
-        return False
+    min_year = radar.get("year")
 
-    if year < 2016:
-        return False
+    if min_year is not None:
+
+        if year is None:
+            return False
+
+        if year < min_year:
+            return False
+
+    # ------------------------------------------------
+    # ПРОБЕГ
+    # ------------------------------------------------
 
     mileage = ad.get("mileage")
 
-    if mileage is None:
+    max_mileage = radar.get("mileage")
+
+    if max_mileage is not None:
+
+        if mileage is None:
+            return False
+
+        if mileage > max_mileage:
+            return False
+
+    # ------------------------------------------------
+    # ГОРОД
+    # ------------------------------------------------
+
+    radar_city = radar.get("city")
+
+    if radar_city:
+
+        if radar_city.lower() not in [
+            "вся россия",
+            "россия",
+            "все регионы"
+        ]:
+
+            ad_city = (
+                ad.get("city", "")
+                .lower()
+            )
+
+            if radar_city.lower() not in ad_city:
+                return False
+
+    return True
+
+
+# ============================================================
+# СВЕЖЕЕ ОБЪЯВЛЕНИЕ
+# ============================================================
+
+def is_new_ad(ad, check_started_at):
+    """
+    Главное правило:
+
+    объявление должно быть опубликовано
+    не раньше предыдущей проверки и не старше 5 минут.
+
+    Если точное время публикации не найдено,
+    объявление НЕ отправляем.
+    """
+
+    published_at = ad.get("published_at")
+
+    if not published_at:
         return False
 
-    if mileage > 200000:
+    now = time.time()
+
+    age = now - published_at
+
+    # Защита от странных дат в будущем
+    if age < -120:
+        return False
+
+    # Старше 5 минут — не отправляем
+    if age > MAX_NEW_AGE_SECONDS:
+        return False
+
+    # Если объявление было до начала проверки
+    if published_at < check_started_at:
         return False
 
     return True
 
 
-# =========================================================
-# СООБЩЕНИЕ
-# =========================================================
+# ============================================================
+# ФОРМАТ СООБЩЕНИЯ
+# ============================================================
 
 def format_ad(ad):
-
     price = ad.get("price")
 
     if price:
-
         price_text = (
             f"{price:,}"
             .replace(",", " ")
             + " ₽"
         )
-
     else:
-
         price_text = "Цена не указана"
 
-    year = ad.get(
-        "year",
-        "—"
-    )
+    year = ad.get("year", "—")
 
-    mileage = ad.get(
-        "mileage"
-    )
+    mileage = ad.get("mileage")
 
     if mileage:
-
         mileage_text = (
             f"{mileage:,}"
             .replace(",", " ")
             + " км"
         )
-
     else:
-
         mileage_text = "—"
 
     city = ad.get(
         "city",
-        "Москва"
+        "Россия"
     )
 
     title = ad.get(
         "title",
-        "Kia Rio"
+        "Автомобиль"
     )
 
     url = ad.get(
@@ -520,107 +796,138 @@ def format_ad(ad):
     )
 
 
-# =========================================================
+# ============================================================
 # МОНИТОРИНГ
-# =========================================================
+# ============================================================
 
 async def monitor_job(context):
-
     print("")
-    print("🔄 НАЧИНАЮ АВТОМАТИЧЕСКУЮ ПРОВЕРКУ")
+    print("====================================")
+    print("🔄 АВТОМАТИЧЕСКАЯ ПРОВЕРКА")
+    print("====================================")
 
-    ads = get_avito_ads()
+    check_started_at = time.time()
 
-    if not ads:
+    all_radars = load_radars()
 
-        print(
-            "⚠️ Объявления не получены"
-        )
-
+    if not all_radars:
+        print("📭 Нет активных радаров")
         return
 
     seen = load_seen()
 
-    # Первый запуск
+    # ------------------------------------------------
+    # Для каждого пользователя
+    # ------------------------------------------------
 
-    first_run = len(seen) == 0
+    for user_id, user_radars in all_radars.items():
 
-    new_ads = []
+        if not user_radars:
+            continue
 
-    for ad in ads:
+        print("")
+        print(
+            "👤 Пользователь:",
+            user_id
+        )
 
-        item_id = ad["id"]
+        # ------------------------------------------------
+        # Каждый радар отдельно
+        # ------------------------------------------------
 
-        if item_id not in seen:
+        for radar_index, radar in enumerate(
+            user_radars,
+            start=1
+        ):
 
-            seen.append(item_id)
+            print("")
+            print(
+                f"🔎 Радар #{radar_index}:",
+                radar.get("car")
+            )
 
-            if not first_run:
+            ads = get_avito_ads(
+                radar
+            )
 
-                if matches_radar(ad):
+            if not ads:
+                print(
+                    "⚠️ Объявления не получены"
+                )
+                continue
 
-                    new_ads.append(ad)
+            for ad in ads:
+
+                item_id = ad.get("id")
+
+                if not item_id:
+                    continue
+
+                # Уже отправляли
+                if item_id in seen:
+                    continue
+
+                # Сначала проверяем соответствие радара
+                if not matches_radar(
+                    ad,
+                    radar
+                ):
+                    continue
+
+                # Затем проверяем свежесть
+                if not is_new_ad(
+                    ad,
+                    check_started_at
+                ):
+                    continue
+
+                # Запоминаем
+                seen.append(item_id)
+
+                message = format_ad(ad)
+
+                try:
+
+                    await context.bot.send_message(
+                        chat_id=int(user_id),
+                        text=message
+                    )
+
+                    print(
+                        "📲 Уведомление отправлено:",
+                        item_id
+                    )
+
+                except Exception as e:
+
+                    print(
+                        "❌ Ошибка Telegram:",
+                        repr(e)
+                    )
+
+    # Не даём списку расти бесконечно
+    if len(seen) > 10000:
+        seen = seen[-5000:]
 
     save_seen(seen)
 
-    if first_run:
-
-        print(
-            "✅ Первый запуск."
-        )
-
-        print(
-            f"Запомнил {len(seen)} объявлений."
-        )
-
-        return
-
+    print("")
     print(
-        f"🆕 Новых объявлений: "
-        f"{len(new_ads)}"
+        "✅ Проверка завершена."
+    )
+    print(
+        "⏱ Следующая проверка через 5 минут."
     )
 
-    if not new_ads:
 
-        return
+# ============================================================
+# START
+# ============================================================
 
-    users = load_users()
-
-    print(
-        f"👥 Получателей: {len(users)}"
-    )
-
-    for ad in new_ads:
-
-        message = format_ad(ad)
-
-        for chat_id in users:
-
-            try:
-
-                await context.bot.send_message(
-                    chat_id=chat_id,
-                    text=message
-                )
-
-                print(
-                    "📲 Уведомление отправлено:",
-                    ad["id"]
-                )
-
-            except Exception as e:
-
-                print(
-                    "❌ Ошибка Telegram:",
-                    repr(e)
-                )
-
-
-# =========================================================
-# TELEGRAM
-# =========================================================
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def start(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
     chat_id = update.effective_chat.id
 
@@ -640,29 +947,47 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🚗 AUTO RADAR\n\n"
         "Бот работает.\n\n"
-        "🔔 Я могу автоматически "
-        "отслеживать новые автомобили.\n\n"
-        "/radar — создать радар\n"
-        "/radars — мои радары\n"
-        "/help — помощь"
+        "🔎 /radar — создать радар\n"
+        "📋 /radars — мои радары\n"
+        "🗑 /delete 2 — удалить радар №2\n"
+        "❓ /help — помощь"
     )
 
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ============================================================
+# HELP
+# ============================================================
+
+async def help_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
     await update.message.reply_text(
         "🔎 AUTO RADAR\n\n"
         "Команды:\n\n"
-        "/radar — создать радар\n"
+        "/radar — создать новый радар\n"
         "/radars — показать мои радары\n"
+        "/delete 2 — удалить радар №2\n"
         "/help — помощь\n\n"
-        "Сейчас тестовый мониторинг:\n"
-        "Kia Rio / Москва / до 700 000 ₽ / "
-        "от 2016 года / до 200 000 км."
+        "Пример:\n\n"
+        "Kia Rio, до 700000 ₽, "
+        "от 2016 года, "
+        "пробег до 200000 км, "
+        "вся Россия\n\n"
+        "Если указать город, "
+        "бот будет учитывать его."
     )
 
 
-async def radar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ============================================================
+# СОЗДАНИЕ РАДАРА
+# ============================================================
+
+async def radar(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
     context.user_data[
         "creating_radar"
@@ -672,13 +997,26 @@ async def radar(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🚨 СОЗДАНИЕ РАДАРА\n\n"
         "Отправь параметры одним сообщением.\n\n"
         "Например:\n\n"
-        "Kia Rio, до 700 000 ₽, "
+        "Kia Rio, до 700000 ₽, "
         "от 2016 года, "
-        "пробег до 200 000 км, Москва"
+        "пробег до 200000 км, "
+        "вся Россия\n\n"
+        "Или для конкретного города:\n\n"
+        "Kia Rio, до 700000 ₽, "
+        "от 2016 года, "
+        "пробег до 200000 км, "
+        "Москва"
     )
 
 
-async def radars(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ============================================================
+# СПИСОК РАДАРОВ
+# ============================================================
+
+async def radars(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
     user_id = str(
         update.effective_user.id
@@ -700,9 +1038,7 @@ async def radars(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         return
 
-    message = (
-        "🚨 ТВОИ РАДАРЫ\n\n"
-    )
+    message = "🚨 ТВОИ РАДАРЫ\n\n"
 
     for index, radar_data in enumerate(
         user_radars,
@@ -718,26 +1054,27 @@ async def radars(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
         if price:
-
             price_text = (
                 f"{price:,}"
                 .replace(",", " ")
             )
-
         else:
-
             price_text = "—"
 
         if mileage:
-
             mileage_text = (
                 f"{mileage:,}"
                 .replace(",", " ")
             )
-
         else:
-
             mileage_text = "—"
+
+        city = radar_data.get(
+            "city"
+        )
+
+        if not city:
+            city = "Вся Россия"
 
         message += (
             f"🔎 Радар #{index}\n"
@@ -745,13 +1082,116 @@ async def radars(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"💰 до {price_text} ₽\n"
             f"📅 от {radar_data.get('year', '—')}\n"
             f"📏 до {mileage_text} км\n"
-            f"📍 {radar_data.get('city', '—')}\n\n"
+            f"📍 {city}\n\n"
         )
+
+    message += (
+        "🗑 Чтобы удалить радар:\n"
+        "/delete 2"
+    )
 
     await update.message.reply_text(
         message
     )
 
+
+# ============================================================
+# УДАЛЕНИЕ РАДАРА
+# ============================================================
+
+async def delete_radar(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    user_id = str(
+        update.effective_user.id
+    )
+
+    if not context.args:
+
+        await update.message.reply_text(
+            "❌ Укажи номер радара.\n\n"
+            "Например:\n"
+            "/delete 2"
+        )
+
+        return
+
+    try:
+
+        radar_number = int(
+            context.args[0]
+        )
+
+    except ValueError:
+
+        await update.message.reply_text(
+            "❌ Номер радара должен быть числом.\n\n"
+            "Например:\n"
+            "/delete 2"
+        )
+
+        return
+
+    all_radars = load_radars()
+
+    user_radars = all_radars.get(
+        user_id,
+        []
+    )
+
+    if not user_radars:
+
+        await update.message.reply_text(
+            "📭 У тебя нет активных радаров."
+        )
+
+        return
+
+    if (
+        radar_number < 1
+        or radar_number > len(user_radars)
+    ):
+
+        await update.message.reply_text(
+            f"❌ Радара №{radar_number} нет.\n\n"
+            f"У тебя сейчас радаров: "
+            f"{len(user_radars)}."
+        )
+
+        return
+
+    deleted_radar = user_radars.pop(
+        radar_number - 1
+    )
+
+    all_radars[user_id] = user_radars
+
+    save_radars(
+        all_radars
+    )
+
+    city = deleted_radar.get(
+        "city"
+    )
+
+    if not city:
+        city = "Вся Россия"
+
+    await update.message.reply_text(
+        "🗑 РАДАР УДАЛЁН!\n\n"
+        f"🚗 {deleted_radar.get('car', '—')}\n"
+        f"💰 До {deleted_radar.get('price') or '—'} ₽\n"
+        f"📅 От {deleted_radar.get('year') or '—'} года\n"
+        f"📏 До {deleted_radar.get('mileage') or '—'} км\n"
+        f"📍 {city}"
+    )
+
+
+# ============================================================
+# ПОЛУЧЕНИЕ РАДАРА ИЗ СООБЩЕНИЯ
+# ============================================================
 
 async def handle_message(
     update: Update,
@@ -771,7 +1211,9 @@ async def handle_message(
 
         return
 
-    # Цена
+    # ------------------------------------------------
+    # ЦЕНА
+    # ------------------------------------------------
 
     price = None
 
@@ -783,12 +1225,13 @@ async def handle_message(
 
     if price_match:
 
-        price = int(
+        price = parse_number(
             price_match.group(1)
-            .replace(" ", "")
         )
 
-    # Год
+    # ------------------------------------------------
+    # ГОД
+    # ------------------------------------------------
 
     year = None
 
@@ -804,7 +1247,9 @@ async def handle_message(
             year_match.group(1)
         )
 
-    # Пробег
+    # ------------------------------------------------
+    # ПРОБЕГ
+    # ------------------------------------------------
 
     mileage = None
 
@@ -816,12 +1261,13 @@ async def handle_message(
 
     if mileage_match:
 
-        mileage = int(
+        mileage = parse_number(
             mileage_match.group(1)
-            .replace(" ", "")
         )
 
-    # Город
+    # ------------------------------------------------
+    # ГОРОД
+    # ------------------------------------------------
 
     cities = [
         "Москва",
@@ -839,17 +1285,44 @@ async def handle_message(
         "Омск",
         "Тула",
         "Тверь",
+        "Иркутск",
+        "Новосибирск",
+        "Красноярск",
+        "Челябинск",
+        "Владивосток",
+        "Хабаровск",
+        "Саратов",
+        "Тюмень",
+        "Калининград",
+        "Ярославль",
+        "Белгород",
+        "Волгоград",
+        "Мурманск",
+        "Ставрополь",
+        "Барнаул",
     ]
 
     city = None
 
-    for city_name in cities:
+    text_lower = text.lower()
 
-        if city_name.lower() in text.lower():
+    if (
+        "вся россия" not in text_lower
+        and "россия" not in text_lower
+        and "все регионы" not in text_lower
+    ):
 
-            city = city_name
+        for city_name in cities:
 
-            break
+            if city_name.lower() in text_lower:
+
+                city = city_name
+
+                break
+
+    # ------------------------------------------------
+    # АВТОМОБИЛЬ
+    # ------------------------------------------------
 
     parts = [
         part.strip()
@@ -861,6 +1334,10 @@ async def handle_message(
         if parts
         else text
     )
+
+    # ------------------------------------------------
+    # РАДАР
+    # ------------------------------------------------
 
     radar_data = {
         "car": car,
@@ -893,17 +1370,21 @@ async def handle_message(
     ] = False
 
     price_text = (
-        f"{price:,}"
-        .replace(",", " ")
+        f"{price:,}".replace(",", " ")
         if price
         else "—"
     )
 
     mileage_text = (
-        f"{mileage:,}"
-        .replace(",", " ")
+        f"{mileage:,}".replace(",", " ")
         if mileage
         else "—"
+    )
+
+    city_text = (
+        city
+        if city
+        else "Вся Россия"
     )
 
     await update.message.reply_text(
@@ -912,14 +1393,15 @@ async def handle_message(
         f"💰 До {price_text} ₽\n"
         f"📅 От {year or '—'} года\n"
         f"📏 До {mileage_text} км\n"
-        f"📍 {city or '—'}\n\n"
-        "🔔 Радар сохранён."
+        f"📍 {city_text}\n\n"
+        "🔔 Радар сохранён.\n\n"
+        "⏱ Проверка новых объявлений — каждые 5 минут."
     )
 
 
-# =========================================================
-# ЗАПУСК
-# =========================================================
+# ============================================================
+# MAIN
+# ============================================================
 
 def main():
 
@@ -929,7 +1411,10 @@ def main():
             "TELEGRAM_BOT_TOKEN не задан"
         )
 
-    # Render Web Service
+    # ------------------------------------------------
+    # Flask для Render
+    # ------------------------------------------------
+
     import threading
 
     def run_web():
@@ -951,7 +1436,9 @@ def main():
         daemon=True
     ).start()
 
-    # Telegram Application
+    # ------------------------------------------------
+    # Telegram
+    # ------------------------------------------------
 
     telegram_app = (
         Application
@@ -989,6 +1476,13 @@ def main():
     )
 
     telegram_app.add_handler(
+        CommandHandler(
+            "delete",
+            delete_radar
+        )
+    )
+
+    telegram_app.add_handler(
         MessageHandler(
             filters.TEXT
             & ~filters.COMMAND,
@@ -996,7 +1490,10 @@ def main():
         )
     )
 
-    # Автоматическая проверка
+    # ------------------------------------------------
+    # АВТОМАТИЧЕСКАЯ ПРОВЕРКА
+    # ------------------------------------------------
+
     telegram_app.job_queue.run_repeating(
         monitor_job,
         interval=CHECK_INTERVAL,
@@ -1008,15 +1505,18 @@ def main():
     print("🚗 AUTO RADAR BOT ЗАПУЩЕН")
     print("====================================")
     print("")
-    print(
-        "🚨 АВТОМАТИЧЕСКИЙ РАДАР ЗАПУЩЕН"
-    )
-    print(
-        "⏱ Проверка каждые 10 минут"
-    )
+    print("🚨 АВТОМАТИЧЕСКИЙ РАДАР ЗАПУЩЕН")
+    print("⏱ Проверка каждые 5 минут")
+    print("🇷🇺 Режим поиска: Вся Россия")
+    print("🆕 Отправка: только свежие объявления")
+    print("====================================")
 
     telegram_app.run_polling()
 
+
+# ============================================================
+# START
+# ============================================================
 
 if __name__ == "__main__":
     main()
