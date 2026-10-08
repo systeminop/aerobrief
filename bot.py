@@ -2,6 +2,8 @@ import os
 import re
 import json
 import threading
+import requests
+
 from flask import Flask
 from telegram import Update
 from telegram.ext import (
@@ -15,6 +17,8 @@ from telegram.ext import (
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 RADARS_FILE = "radars.json"
 
+AVITO_URL = "https://m.avito.ru/moskva/avtomobili/kia/rio-ASgBAgICAkTgtg3KmCjitg3Krig?context=H4sIAAAAAAAA_wGeAGH_YTo0OntzOjk6ImZyb21fcGFnZSI7czo3OiJmaWx0ZXJzIjtzOjY6InNvdXJjZSI7czo4OiJvcmRpbmFyeSI7czo1Mjoic291cmNlX3F1ZXJ5IjtzOjc6ImtpYSByaW8iO3M6NToieF9zZ3QiO3M6NDA6IjM4MDNiMzU2Mzk1ZDIwMDk4NjY3Y2IzMzliMGRhZjkzZTcxYzNlODMiO32uyOswngAAAA&f=ASgBAgECAkTgtg3KmCjitg3KrigDRf4pGXsiZnJvbSI6bnVsbCwidG8iOjIwMDAwMH3GmgwWeyJmcm9tIjowLCJ0byI6NzAwMDAwffqMFBd7ImZyb20iOjIwMTYsInRvIjpudWxsfQ&moreExpensive=0&presentationType=serp&radius=0"
+
 app_web = Flask(__name__)
 
 
@@ -26,6 +30,34 @@ def home():
 def run_web():
     port = int(os.getenv("PORT", 10000))
     app_web.run(host="0.0.0.0", port=port)
+
+
+def test_avito():
+    print("===== AVITO TEST START =====")
+
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+            "AppleWebKit/605.1.15 Version/17.0 Mobile/15E148 Safari/604.1"
+        )
+    }
+
+    try:
+        response = requests.get(
+            AVITO_URL,
+            headers=headers,
+            timeout=20
+        )
+
+        print("AVITO STATUS:", response.status_code)
+        print("AVITO LENGTH:", len(response.text))
+        print("AVITO RESPONSE:")
+        print(response.text[:2000])
+
+    except Exception as e:
+        print("AVITO ERROR:", repr(e))
+
+    print("===== AVITO TEST END =====")
 
 
 def load_radars():
@@ -178,9 +210,7 @@ async def radars(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else "📏 пробег —\n"
         )
 
-        message += (
-            f"📍 {radar_data.get('city', '—')}\n\n"
-        )
+        message += f"📍 {radar_data.get('city', '—')}\n\n"
 
     await update.message.reply_text(message)
 
@@ -228,6 +258,10 @@ def main():
     if not TOKEN:
         raise RuntimeError("TELEGRAM_BOT_TOKEN не задан")
 
+    # Тест Avito
+    test_avito()
+
+    # Запускаем веб-сервер для Render
     threading.Thread(target=run_web, daemon=True).start()
 
     telegram_app = Application.builder().token(TOKEN).build()
