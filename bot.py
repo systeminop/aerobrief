@@ -1,5 +1,6 @@
 import os
 import re
+import json
 
 from telegram import Update
 from telegram.ext import (
@@ -12,33 +13,23 @@ from telegram.ext import (
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "🚗 Auto Radar запущен!\n\n"
-        "Я ищу автомобили с потенциалом для перепродажи.\n\n"
-        "Команды:\n"
-        "/help — помощь\n"
-        "/cars — поиск автомобилей"
-    )
+RADARS_FILE = "radars.json"
 
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "🔎 Auto Radar\n\n"
-        "Я могу обработать запрос на поиск автомобиля.\n\n"
-        "/cars — начать поиск автомобиля"
-    )
+def load_radars():
+    if not os.path.exists(RADARS_FILE):
+        return {}
+
+    try:
+        with open(RADARS_FILE, "r", encoding="utf-8") as file:
+            return json.load(file)
+    except Exception:
+        return {}
 
 
-async def cars(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "🚗 Поиск автомобиля\n\n"
-        "Напиши параметры в одном сообщении.\n\n"
-        "Например:\n"
-        "Kia Rio, до 700 000 ₽, от 2016 года, "
-        "пробег до 200 000 км, Москва"
-    )
+def save_radars(radars):
+    with open(RADARS_FILE, "w", encoding="utf-8") as file:
+        json.dump(radars, file, ensure_ascii=False, indent=2)
 
 
 def extract_parameters(text):
@@ -97,46 +88,120 @@ def extract_parameters(text):
             city = city_name
             break
 
-    return price, year, mileage, city
+    parts = [part.strip() for part in text.split(",")]
+
+    car = parts[0] if parts else text
+
+    return {
+        "car": car,
+        "price": price,
+        "year": year,
+        "mileage": mileage,
+        "city": city,
+    }
+
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "🚗 AUTO RADAR\n\n"
+        "Я автоматически ищу новые автомобили "
+        "по заданным тобой параметрам.\n\n"
+        "Команды:\n"
+        "/radar — создать новый радар\n"
+        "/radars — мои радары\n"
+        "/help — помощь"
+    )
+
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "🔎 AUTO RADAR\n\n"
+        "Создай радар командой /radar.\n\n"
+        "Например:\n"
+        "Kia Rio, до 700 000 ₽, от 2016 года, "
+        "пробег до 200 000 км, Москва\n\n"
+        "После создания радара бот будет "
+        "готов к автоматическому мониторингу."
+    )
+
+
+async def radar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "🚨 СОЗДАНИЕ РАДАРА\n\n"
+        "Отправь одним сообщением параметры автомобиля.\n\n"
+        "Например:\n\n"
+        "Kia Rio, до 700 000 ₽, от 2016 года, "
+        "пробег до 200 000 км, Москва"
+    )
+
+    context.user_data["creating_radar"] = True
+
+
+async def radars(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.effective_user.id)
+
+    all_radars = load_radars()
+    user_radars = all_radars.get(user_id, [])
+
+    if not user_radars:
+        await update.message.reply_text(
+            "📭 У тебя пока нет активных радаров.\n\n"
+            "Создай первый через /radar"
+        )
+        return
+
+    message = "🚨 ТВОИ РАДАРЫ\n\n"
+
+    for index, radar_data in enumerate(user_radars, start=1):
+        message += (
+            f"🔎 Радар #{index}\n"
+            f"🚗 {radar_data['car']}\n"
+            f"💰 до {radar_data['price']:,} ₽\n"
+            f"📅 от {radar_data['year']}\n"
+            f"📏 до {radar_data['mileage']:,} км\n"
+            f"📍 {radar_data['city']}\n\n"
+        )
+
+    await update.message.reply_text(message.replace(",", " "))
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
 
-    price, year, mileage, city = extract_parameters(text)
+    if context.user_data.get("creating_radar"):
+        radar_data = extract_parameters(text)
 
-    result = (
-        "🔎 AUTO RADAR\n\n"
-        f"Запрос:\n{text}\n\n"
-        "🧠 Распознанные параметры:\n\n"
-        f"🚗 Автомобиль: {text.split(',')[0].strip()}\n"
-        f"💰 Максимальная цена: "
-        f"{price:,} ₽\n".replace(",", " ")
-        if price
-        else "💰 Максимальная цена: не определена\n"
-    )
+        user_id = str(update.effective_user.id)
 
-    if price:
-        result += f"📅 Минимальный год: {year or 'не определён'}\n"
-        result += f"📏 Максимальный пробег: "
-        result += f"{mileage:,} км\n".replace(",", " ") if mileage else "не определён\n"
-        result += f"📍 Город: {city or 'не определён'}\n\n"
-    else:
-        result += (
-            f"📅 Минимальный год: {year or 'не определён'}\n"
-            f"📏 Максимальный пробег: "
-            f"{mileage:,} км\n".replace(",", " ") if mileage else "📏 Максимальный пробег: не определён\n"
+        all_radars = load_radars()
+
+        if user_id not in all_radars:
+            all_radars[user_id] = []
+
+        all_radars[user_id].append(radar_data)
+
+        save_radars(all_radars)
+
+        context.user_data["creating_radar"] = False
+
+        await update.message.reply_text(
+            "✅ РАДАР СОЗДАН!\n\n"
+            f"🚗 {radar_data['car']}\n"
+            f"💰 До {radar_data['price']:,} ₽\n"
+            f"📅 От {radar_data['year']} года\n"
+            f"📏 До {radar_data['mileage']:,} км\n"
+            f"📍 {radar_data['city']}\n\n"
+            "🔔 Теперь этот запрос сохранён.\n\n"
+            "Следующий этап — подключаем автоматический "
+            "мониторинг новых объявлений."
         )
-        result += f"📍 Город: {city or 'не определён'}\n\n"
 
-    result += (
-        "✅ Запрос успешно обработан.\n\n"
-        "⏳ Следующий этап:\n"
-        "подключаем реальные объявления "
-        "и анализируем цену."
+        return
+
+    await update.message.reply_text(
+        "🤔 Я не понял команду.\n\n"
+        "Используй /radar, чтобы создать автоматический поиск."
     )
-
-    await update.message.reply_text(result)
 
 
 def main():
@@ -147,7 +212,8 @@ def main():
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CommandHandler("cars", cars))
+    app.add_handler(CommandHandler("radar", radar))
+    app.add_handler(CommandHandler("radars", radars))
 
     app.add_handler(
         MessageHandler(
@@ -156,7 +222,7 @@ def main():
         )
     )
 
-    print("Auto Radar Bot запущен")
+    print("AUTO RADAR BOT запущен")
 
     app.run_polling()
 
