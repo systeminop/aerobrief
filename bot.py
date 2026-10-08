@@ -396,7 +396,11 @@ def get_avito_ads(radar):
                 ]
 
                 for pattern in title_patterns:
-                    match = re.search(pattern, block, re.I)
+                    match = re.search(
+                        pattern,
+                        block,
+                        re.I
+                    )
 
                     if match:
                         title = clean_text(match.group(1))
@@ -415,18 +419,39 @@ def get_avito_ads(radar):
                 if year_match:
                     year = int(year_match.group(1))
 
+                # -------------------------------------------------
+                # ПРОБЕГ ОБЪЯВЛЕНИЯ
+                # -------------------------------------------------
+
                 mileage = None
 
-                mileage_match = re.search(
+                mileage_patterns = [
                     r'(\d[\d\s]{2,8})\s*км',
-                    block,
-                    re.I
-                )
+                    r'(\d[\d\s]{1,8})\s*тыс\.?\s*км',
+                ]
 
-                if mileage_match:
-                    mileage = parse_number(
-                        mileage_match.group(1)
+                for mileage_pattern in mileage_patterns:
+
+                    mileage_match = re.search(
+                        mileage_pattern,
+                        block,
+                        re.I
                     )
+
+                    if mileage_match:
+
+                        mileage = parse_number(
+                            mileage_match.group(1)
+                        )
+
+                        if mileage is not None:
+
+                            # Если указано "тыс. км",
+                            # переводим в километры
+                            if "тыс" in mileage_match.group(0).lower():
+                                mileage *= 1000
+
+                            break
 
                 price = None
 
@@ -629,11 +654,12 @@ def matches_radar(ad, radar):
             return False
 
     # -----------------------------
-    # Пробег
+    # ПРОБЕГ
     # -----------------------------
 
     mileage = ad.get("mileage")
 
+    # Пробег ДО
     mileage_to = radar.get("mileage_to")
 
     if mileage_to is not None:
@@ -644,6 +670,17 @@ def matches_radar(ad, radar):
         if mileage > mileage_to:
             return False
 
+    # Пробег ОТ
+    mileage_from = radar.get("mileage_from")
+
+    if mileage_from is not None:
+
+        if mileage is None:
+            return False
+
+        if mileage < mileage_from:
+            return False
+
     # -----------------------------
     # Город
     # -----------------------------
@@ -652,12 +689,19 @@ def matches_radar(ad, radar):
 
     if radar_city:
 
-        ad_city = (
-            ad.get("city") or ""
-        ).lower()
+        # Если стоит "Россия", не фильтруем
+        if radar_city.lower() not in [
+            "россия",
+            "вся россия",
+            "вся страна",
+        ]:
 
-        if radar_city.lower() not in ad_city:
-            return False
+            ad_city = (
+                ad.get("city") or ""
+            ).lower()
+
+            if radar_city.lower() not in ad_city:
+                return False
 
     return True
 
@@ -822,7 +866,11 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         "Пример радара:\n"
         "Kia Rio, до 700000, от 2016, "
-        "пробег до 200000, Москва"
+        "пробег до 200000, Москва\n\n"
+
+        "Можно также указать минимальный пробег:\n"
+        "Kia Rio, до 700000, от 2016, "
+        "пробег от 100000, Москва"
     )
 
 
@@ -940,9 +988,17 @@ async def radars_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"📅 до {radar['year_to']}\n"
             )
 
+        if radar.get("mileage_from") is not None:
+            text += (
+                f"🛣 Пробег от: "
+                f"{radar['mileage_from']:,} км\n"
+                .replace(",", " ")
+            )
+
         if radar.get("mileage_to") is not None:
             text += (
-                f"🛣 до {radar['mileage_to']:,} км\n"
+                f"🛣 Пробег до: "
+                f"{radar['mileage_to']:,} км\n"
                 .replace(",", " ")
             )
 
@@ -1023,7 +1079,10 @@ async def radar_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Напиши одной строкой, например:\n\n"
         "Kia Rio, до 700000, от 2016, "
         "пробег до 200000, Москва\n\n"
-        "Если город не указать — ищем по всей России."
+        "Если город не указать — ищем по всей России.\n\n"
+        "Можно указать минимальный пробег:\n"
+        "Kia Rio, до 700000, от 2016, "
+        "пробег от 100000, Москва"
     )
 
 
@@ -1069,65 +1128,104 @@ async def handle_message(
         "price_to": None,
         "year_from": None,
         "year_to": None,
+        "mileage_from": None,
         "mileage_to": None,
         "city": None,
     }
 
+    # -----------------------------------------------------
+    # Разбираем параметры
+    # -----------------------------------------------------
+
     for part in parts[1:]:
 
-        low = part.lower()
+        low = part.lower().strip()
 
-        # Цена ДО
-        if "до" in low and (
-            "₽" in low
-            or "руб" in low
-            or re.search(r"\d", low)
+        # =================================================
+        # ПРОБЕГ
+        # Проверяем ПЕРВЫМ, чтобы "пробег до 200000"
+        # никогда не воспринимался как цена.
+        # =================================================
+
+        if (
+            "пробег" in low
+            or "километр" in low
+            or "км" in low
         ):
+
             number = parse_number(part)
 
             if number:
-                radar["price_to"] = number
-                continue
 
-        # Цена ОТ
-        if "от" in low and (
-            "₽" in low
-            or "руб" in low
-        ):
-            number = parse_number(part)
+                # Пробег ДО
+                if "до" in low:
+                    radar["mileage_to"] = number
+                    continue
 
-            if number:
-                radar["price_from"] = number
-                continue
+                # Пробег ОТ
+                if "от" in low:
+                    radar["mileage_from"] = number
+                    continue
 
-        # Год ОТ
-        if "от" in low and "пробег" not in low:
+        # =================================================
+        # ГОД ОТ
+        # =================================================
+
+        if "от" in low:
 
             number = parse_number(part)
 
             if number and 1900 <= number <= 2030:
+
                 radar["year_from"] = number
                 continue
 
-        # Год ДО
-        if "до" in low and "пробег" not in low:
+        # =================================================
+        # ГОД ДО
+        # =================================================
+
+        if "до" in low:
 
             number = parse_number(part)
 
             if number and 1900 <= number <= 2030:
+
                 radar["year_to"] = number
                 continue
 
-        # Пробег
-        if "пробег" in low:
+        # =================================================
+        # ЦЕНА ДО
+        # =================================================
+
+        if "до" in low:
 
             number = parse_number(part)
 
             if number:
-                radar["mileage_to"] = number
+
+                radar["price_to"] = number
                 continue
 
-        # Город
+        # =================================================
+        # ЦЕНА ОТ
+        # =================================================
+
+        if "от" in low:
+
+            number = parse_number(part)
+
+            if number:
+
+                # 2011 уже обработан как год
+                if not (1900 <= number <= 2030):
+
+                    radar["price_from"] = number
+                    continue
+
+        # =================================================
+        # ГОРОД
+        # =================================================
+
         if any(
             letter.isalpha()
             for letter in part
@@ -1143,6 +1241,13 @@ async def handle_message(
                 radar["city"] = part
 
     # -----------------------------------------------------
+    # Если город не указан — вся Россия
+    # -----------------------------------------------------
+
+    if not radar["city"]:
+        radar["city"] = "Россия"
+
+    # -----------------------------------------------------
     # Сохраняем
     # -----------------------------------------------------
 
@@ -1156,7 +1261,7 @@ async def handle_message(
     )
 
     # -----------------------------------------------------
-    # Показываем
+    # Показываем созданный радар
     # -----------------------------------------------------
 
     text_reply = (
@@ -1188,6 +1293,13 @@ async def handle_message(
         text_reply += (
             f"📅 Год до: "
             f"{radar['year_to']}\n"
+        )
+
+    if radar["mileage_from"] is not None:
+        text_reply += (
+            f"🛣 Пробег от: "
+            f"{radar['mileage_from']:,} км\n"
+            .replace(",", " ")
         )
 
     if radar["mileage_to"] is not None:
@@ -1231,8 +1343,6 @@ async def monitor_job(
     print("🔄 АВТОМАТИЧЕСКАЯ ПРОВЕРКА")
     print("====================================")
 
-    check_start = time.time()
-
     users = load_json(
         USERS_FILE,
         []
@@ -1270,6 +1380,31 @@ async def monitor_job(
             print(
                 f"🔎 Радар #{index}: "
                 f"{radar.get('car')}"
+            )
+
+            print(
+                "💰 Цена до:",
+                radar.get("price_to")
+            )
+
+            print(
+                "📅 Год от:",
+                radar.get("year_from")
+            )
+
+            print(
+                "🛣 Пробег от:",
+                radar.get("mileage_from")
+            )
+
+            print(
+                "🛣 Пробег до:",
+                radar.get("mileage_to")
+            )
+
+            print(
+                "📍 Город:",
+                radar.get("city")
             )
 
             ads = get_avito_ads(
