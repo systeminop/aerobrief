@@ -33,7 +33,8 @@ def run_web():
 
 
 def get_avito_ads():
-    print("===== AVITO PARSER START =====")
+
+    print("===== AVITO SMART PARSER START =====")
 
     headers = {
         "User-Agent": (
@@ -43,6 +44,7 @@ def get_avito_ads():
     }
 
     try:
+
         response = requests.get(
             AVITO_URL,
             headers=headers,
@@ -54,13 +56,11 @@ def get_avito_ads():
         print("AVITO STATUS:", response.status_code)
         print("AVITO HTML LENGTH:", len(text))
 
-        # Ищем itemId
         item_ids = re.findall(
             r'itemId[=:]\\?["\']?(\d{8,})',
             text
         )
 
-        # Убираем дубли
         unique_ids = []
 
         for item_id in item_ids:
@@ -69,96 +69,168 @@ def get_avito_ads():
 
         print("UNIQUE ITEM IDS:", len(unique_ids))
 
-        ads = []
+        for number, item_id in enumerate(unique_ids[:5], start=1):
 
-        for item_id in unique_ids[:20]:
+            print("")
+            print("========== AD", number, "==========")
+            print("ID:", item_id)
 
-            # Ищем блок вокруг конкретного itemId
             position = text.find(item_id)
 
             if position == -1:
+                print("BLOCK NOT FOUND")
                 continue
 
-            start = max(0, position - 5000)
-            end = min(len(text), position + 10000)
+            block_start = max(0, position - 8000)
+            block_end = min(len(text), position + 20000)
 
-            block = text[start:end]
+            block = text[block_start:block_end]
 
-            # Название
-            title_match = re.search(
+            title = None
+
+            title_patterns = [
                 r'"imageAlt":"([^"]+)"',
-                block
-            )
+                r'"title":"([^"]+)"',
+                r'\\"imageAlt\\":\\"([^"]+)\\"',
+            ]
 
-            title = (
-                title_match.group(1)
-                if title_match
-                else "Название не найдено"
-            )
+            for pattern in title_patterns:
 
-            # Цена
-            price_match = re.search(
-                r'"price":\{.*?"current":"([^"]+)"',
-                block
-            )
-
-            if not price_match:
-                price_match = re.search(
-                    r'"title":"([\d\s]+)\s*₽"',
+                match = re.search(
+                    pattern,
                     block
                 )
 
-            price = (
-                price_match.group(1)
-                if price_match
-                else "Цена не найдена"
+                if match:
+                    title = match.group(1)
+                    break
+
+            if title:
+
+                title = title.replace(
+                    "\\u0026",
+                    "&"
+                )
+
+                title = title.replace(
+                    "\\/",
+                    "/"
+                )
+
+            else:
+
+                title = "НЕ НАЙДЕНО"
+
+            print("TITLE:", title)
+
+            price = None
+
+            price_patterns = [
+                r'"current":"([^"]+)"',
+                r'\\"current\\":\\"([^"]+)\\"',
+                r'"title":"([\d\s]+)\s*₽"',
+            ]
+
+            for pattern in price_patterns:
+
+                match = re.search(
+                    pattern,
+                    block
+                )
+
+                if match:
+                    price = match.group(1)
+                    break
+
+            if price:
+
+                price = price.replace(
+                    "\\u00a0",
+                    " "
+                )
+
+            else:
+
+                price = "НЕ НАЙДЕНА"
+
+            print("PRICE:", price)
+
+            year_match = re.search(
+                r'(20\d{2})',
+                title
             )
 
-            # Чистим HTML-экранирование
-            title = title.replace("\\u0026", "&")
-            title = title.replace("\\/", "/")
+            if year_match:
+                year = year_match.group(1)
+            else:
+                year = "НЕ НАЙДЕН"
 
-            ad = {
-                "id": item_id,
-                "title": title,
-                "price": price,
-                "url": f"https://www.avito.ru/moskva/avtomobili/avtomobili/{item_id}",
-            }
+            print("YEAR:", year)
 
-            ads.append(ad)
+            mileage_match = re.search(
+                r'([\d\s]+)\s*км',
+                title,
+                re.IGNORECASE
+            )
 
-        print("===== FOUND ADS =====")
+            if mileage_match:
+                mileage = mileage_match.group(1)
+            else:
+                mileage = "НЕ НАЙДЕН"
 
-        for index, ad in enumerate(ads, start=1):
+            print("MILEAGE:", mileage)
 
-            print(f"--- AD #{index} ---")
-            print("ID:", ad["id"])
-            print("TITLE:", ad["title"])
-            print("PRICE:", ad["price"])
-            print("URL:", ad["url"])
+            url = (
+                "https://www.avito.ru/"
+                "moskva/avtomobili/"
+                + item_id
+            )
 
-        print("===== AVITO PARSER END =====")
+            print("URL:", url)
 
-        return ads
+        print("")
+        print("===== AVITO SMART PARSER END =====")
+
+        return unique_ids
 
     except Exception as e:
-        print("AVITO PARSER ERROR:", repr(e))
+
+        print(
+            "AVITO PARSER ERROR:",
+            repr(e)
+        )
+
         return []
 
 
 def load_radars():
+
     if not os.path.exists(RADARS_FILE):
         return {}
 
     try:
-        with open(RADARS_FILE, "r", encoding="utf-8") as file:
+
+        with open(
+            RADARS_FILE,
+            "r",
+            encoding="utf-8"
+        ) as file:
+
             return json.load(file)
+
     except Exception:
+
         return {}
 
 
 def save_radars(radars):
-    with open(RADARS_FILE, "w", encoding="utf-8") as file:
+
+    with open(
+        RADARS_FILE,
+        "w",
+        encoding="utf-8"
+    ) as file:
+
         json.dump(
             radars,
             file,
@@ -192,7 +264,9 @@ def extract_parameters(text):
     )
 
     if year_match:
-        year = int(year_match.group(1))
+        year = int(
+            year_match.group(1)
+        )
 
     mileage_match = re.search(
         r"пробег\s*до\s*([\d\s]+)\s*(?:км)?",
@@ -224,11 +298,17 @@ def extract_parameters(text):
     ]
 
     for city_name in cities:
+
         if city_name.lower() in text.lower():
+
             city = city_name
             break
 
-    parts = [part.strip() for part in text.split(",")]
+    parts = [
+        part.strip()
+        for part in text.split(",")
+    ]
+
     car = parts[0] if parts else text
 
     return {
@@ -259,7 +339,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🔎 AUTO RADAR\n\n"
         "Создай радар командой /radar.\n\n"
         "Например:\n"
-        "Kia Rio, до 700 000 ₽, от 2016 года, "
+        "Kia Rio, до 700 000 ₽, "
+        "от 2016 года, "
         "пробег до 200 000 км, Москва"
     )
 
@@ -270,9 +351,11 @@ async def radar(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
         "🚨 СОЗДАНИЕ РАДАРА\n\n"
-        "Отправь одним сообщением параметры автомобиля.\n\n"
+        "Отправь одним сообщением "
+        "параметры автомобиля.\n\n"
         "Например:\n\n"
-        "Kia Rio, до 700 000 ₽, от 2016 года, "
+        "Kia Rio, до 700 000 ₽, "
+        "от 2016 года, "
         "пробег до 200 000 км, Москва"
     )
 
@@ -295,7 +378,10 @@ async def radars(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     message = "🚨 ТВОИ РАДАРЫ\n\n"
 
-    for index, radar_data in enumerate(user_radars, start=1):
+    for index, radar_data in enumerate(
+        user_radars,
+        start=1
+    ):
 
         price = radar_data.get("price")
         mileage = radar_data.get("mileage")
@@ -370,8 +456,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
         "🤔 Я не понял команду.\n\n"
-        "Используй /radar, чтобы создать "
-        "автоматический поиск."
+        "Используй /radar, "
+        "чтобы создать автоматический поиск."
     )
 
 
@@ -382,10 +468,8 @@ def main():
             "TELEGRAM_BOT_TOKEN не задан"
         )
 
-    # Тестируем получение объявлений Avito
     get_avito_ads()
 
-    # Запускаем HTTP-сервер для Render
     threading.Thread(
         target=run_web,
         daemon=True
