@@ -1,7 +1,8 @@
 import os
 import re
 import json
-
+import threading
+from flask import Flask
 from telegram import Update
 from telegram.ext import (
     Application,
@@ -12,8 +13,19 @@ from telegram.ext import (
 )
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-
 RADARS_FILE = "radars.json"
+
+app_web = Flask(__name__)
+
+
+@app_web.route("/")
+def home():
+    return "AUTO RADAR BOT IS RUNNING", 200
+
+
+def run_web():
+    port = int(os.getenv("PORT", 10000))
+    app_web.run(host="0.0.0.0", port=port)
 
 
 def load_radars():
@@ -89,7 +101,6 @@ def extract_parameters(text):
             break
 
     parts = [part.strip() for part in text.split(",")]
-
     car = parts[0] if parts else text
 
     return {
@@ -119,13 +130,13 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Создай радар командой /radar.\n\n"
         "Например:\n"
         "Kia Rio, до 700 000 ₽, от 2016 года, "
-        "пробег до 200 000 км, Москва\n\n"
-        "После создания радара бот будет "
-        "готов к автоматическому мониторингу."
+        "пробег до 200 000 км, Москва"
     )
 
 
 async def radar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["creating_radar"] = True
+
     await update.message.reply_text(
         "🚨 СОЗДАНИЕ РАДАРА\n\n"
         "Отправь одним сообщением параметры автомобиля.\n\n"
@@ -133,8 +144,6 @@ async def radar(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Kia Rio, до 700 000 ₽, от 2016 года, "
         "пробег до 200 000 км, Москва"
     )
-
-    context.user_data["creating_radar"] = True
 
 
 async def radars(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -153,16 +162,27 @@ async def radars(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = "🚨 ТВОИ РАДАРЫ\n\n"
 
     for index, radar_data in enumerate(user_radars, start=1):
+        price = radar_data.get("price")
+        mileage = radar_data.get("mileage")
+
         message += (
             f"🔎 Радар #{index}\n"
-            f"🚗 {radar_data['car']}\n"
-            f"💰 до {radar_data['price']:,} ₽\n"
-            f"📅 от {radar_data['year']}\n"
-            f"📏 до {radar_data['mileage']:,} км\n"
-            f"📍 {radar_data['city']}\n\n"
+            f"🚗 {radar_data.get('car', '—')}\n"
+            f"💰 до {price:,} ₽\n".replace(",", " ")
         )
 
-    await update.message.reply_text(message.replace(",", " "))
+        message += (
+            f"📅 от {radar_data.get('year', '—')}\n"
+            f"📏 до {mileage:,} км\n".replace(",", " ")
+            if mileage
+            else "📏 пробег —\n"
+        )
+
+        message += (
+            f"📍 {radar_data.get('city', '—')}\n\n"
+        )
+
+    await update.message.reply_text(message)
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -187,13 +207,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "✅ РАДАР СОЗДАН!\n\n"
             f"🚗 {radar_data['car']}\n"
-            f"💰 До {radar_data['price']:,} ₽\n"
-            f"📅 От {radar_data['year']} года\n"
-            f"📏 До {radar_data['mileage']:,} км\n"
-            f"📍 {radar_data['city']}\n\n"
-            "🔔 Теперь этот запрос сохранён.\n\n"
-            "Следующий этап — подключаем автоматический "
-            "мониторинг новых объявлений."
+            f"💰 До {radar_data['price']:,} ₽\n".replace(",", " ")
+            + f"📅 От {radar_data['year']} года\n"
+            + f"📏 До {radar_data['mileage']:,} км\n".replace(",", " ")
+            + f"📍 {radar_data['city']}\n\n"
+            "🔔 Запрос сохранён.\n\n"
+            "Следующий этап — автоматический мониторинг "
+            "новых объявлений."
         )
 
         return
@@ -208,14 +228,16 @@ def main():
     if not TOKEN:
         raise RuntimeError("TELEGRAM_BOT_TOKEN не задан")
 
-    app = Application.builder().token(TOKEN).build()
+    threading.Thread(target=run_web, daemon=True).start()
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CommandHandler("radar", radar))
-    app.add_handler(CommandHandler("radars", radars))
+    telegram_app = Application.builder().token(TOKEN).build()
 
-    app.add_handler(
+    telegram_app.add_handler(CommandHandler("start", start))
+    telegram_app.add_handler(CommandHandler("help", help_command))
+    telegram_app.add_handler(CommandHandler("radar", radar))
+    telegram_app.add_handler(CommandHandler("radars", radars))
+
+    telegram_app.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND,
             handle_message
@@ -224,7 +246,7 @@ def main():
 
     print("AUTO RADAR BOT запущен")
 
-    app.run_polling()
+    telegram_app.run_polling()
 
 
 if __name__ == "__main__":
