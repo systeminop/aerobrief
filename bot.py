@@ -1,3 +1,4 @@
+# AVITO STRUCTURE TEST
 import os
 import re
 import json
