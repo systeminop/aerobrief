@@ -32,8 +32,8 @@ def run_web():
     app_web.run(host="0.0.0.0", port=port)
 
 
-def test_avito():
-    print("===== NEW AVITO TEST =====")
+def get_avito_ads():
+    print("===== AVITO PARSER START =====")
 
     headers = {
         "User-Agent": (
@@ -51,61 +51,99 @@ def test_avito():
 
         text = response.text
 
-        print("NEW AVITO STATUS:", response.status_code)
-        print("NEW AVITO LENGTH:", len(text))
-        print("NEW RIO COUNT:", text.lower().count("kia rio"))
+        print("AVITO STATUS:", response.status_code)
+        print("AVITO HTML LENGTH:", len(text))
 
-        markers = [
-            "__NEXT_DATA__",
-            "itemId",
-            "item_id",
-            "price",
-            "mileage",
-            "vehicle",
-            "year",
-            "location",
-            "title"
-        ]
+        # Ищем itemId
+        item_ids = re.findall(
+            r'itemId[=:]\\?["\']?(\d{8,})',
+            text
+        )
 
-        print("===== NEW DATA MARKERS =====")
+        # Убираем дубли
+        unique_ids = []
 
-        for marker in markers:
-            count = text.lower().count(marker.lower())
-            print(f"NEW {marker}: {count}")
+        for item_id in item_ids:
+            if item_id not in unique_ids:
+                unique_ids.append(item_id)
 
-        print("===== NEW ITEMID SAMPLES =====")
+        print("UNIQUE ITEM IDS:", len(unique_ids))
 
-        positions = []
-        start = 0
+        ads = []
 
-        while True:
-            position = text.find("itemId", start)
+        for item_id in unique_ids[:20]:
+
+            # Ищем блок вокруг конкретного itemId
+            position = text.find(item_id)
 
             if position == -1:
-                break
+                continue
 
-            positions.append(position)
-            start = position + 6
+            start = max(0, position - 5000)
+            end = min(len(text), position + 10000)
 
-            if len(positions) >= 3:
-                break
+            block = text[start:end]
 
-        print("NEW ITEMID POSITIONS:", positions)
+            # Название
+            title_match = re.search(
+                r'"imageAlt":"([^"]+)"',
+                block
+            )
 
-        for index, position in enumerate(positions, start=1):
-            print(f"===== NEW SAMPLE {index} =====")
+            title = (
+                title_match.group(1)
+                if title_match
+                else "Название не найдено"
+            )
 
-            sample_start = max(0, position - 300)
-            sample_end = min(len(text), position + 1000)
+            # Цена
+            price_match = re.search(
+                r'"price":\{.*?"current":"([^"]+)"',
+                block
+            )
 
-            print(text[sample_start:sample_end])
+            if not price_match:
+                price_match = re.search(
+                    r'"title":"([\d\s]+)\s*₽"',
+                    block
+                )
 
-        print("===== NEW AVITO TEST END =====")
+            price = (
+                price_match.group(1)
+                if price_match
+                else "Цена не найдена"
+            )
+
+            # Чистим HTML-экранирование
+            title = title.replace("\\u0026", "&")
+            title = title.replace("\\/", "/")
+
+            ad = {
+                "id": item_id,
+                "title": title,
+                "price": price,
+                "url": f"https://www.avito.ru/moskva/avtomobili/avtomobili/{item_id}",
+            }
+
+            ads.append(ad)
+
+        print("===== FOUND ADS =====")
+
+        for index, ad in enumerate(ads, start=1):
+
+            print(f"--- AD #{index} ---")
+            print("ID:", ad["id"])
+            print("TITLE:", ad["title"])
+            print("PRICE:", ad["price"])
+            print("URL:", ad["url"])
+
+        print("===== AVITO PARSER END =====")
+
+        return ads
 
     except Exception as e:
-        print("NEW AVITO ERROR:", repr(e))
-
-    print("===== NEW AVITO TEST FINISHED =====")
+        print("AVITO PARSER ERROR:", repr(e))
+        return []
 
 
 def load_radars():
@@ -130,6 +168,7 @@ def save_radars(radars):
 
 
 def extract_parameters(text):
+
     price = None
     year = None
     mileage = None
@@ -202,6 +241,7 @@ def extract_parameters(text):
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
     await update.message.reply_text(
         "🚗 AUTO RADAR\n\n"
         "Я автоматически ищу новые автомобили "
@@ -214,6 +254,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
     await update.message.reply_text(
         "🔎 AUTO RADAR\n\n"
         "Создай радар командой /radar.\n\n"
@@ -224,6 +265,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def radar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
     context.user_data["creating_radar"] = True
 
     await update.message.reply_text(
@@ -236,16 +278,19 @@ async def radar(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def radars(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
     user_id = str(update.effective_user.id)
 
     all_radars = load_radars()
     user_radars = all_radars.get(user_id, [])
 
     if not user_radars:
+
         await update.message.reply_text(
             "📭 У тебя пока нет активных радаров.\n\n"
             "Создай первый через /radar"
         )
+
         return
 
     message = "🚨 ТВОИ РАДАРЫ\n\n"
@@ -318,9 +363,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📅 От {radar_data['year']} года\n"
             f"📏 До {mileage_text} км\n"
             f"📍 {radar_data['city']}\n\n"
-            "🔔 Запрос сохранён.\n\n"
-            "Следующий этап — автоматический "
-            "мониторинг новых объявлений."
+            "🔔 Запрос сохранён."
         )
 
         return
@@ -339,8 +382,10 @@ def main():
             "TELEGRAM_BOT_TOKEN не задан"
         )
 
-    test_avito()
+    # Тестируем получение объявлений Avito
+    get_avito_ads()
 
+    # Запускаем HTTP-сервер для Render
     threading.Thread(
         target=run_web,
         daemon=True
