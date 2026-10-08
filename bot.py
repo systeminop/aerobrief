@@ -51,13 +51,43 @@ def test_avito():
 
         print("AVITO STATUS:", response.status_code)
         print("AVITO LENGTH:", len(response.text))
-        print("AVITO RESPONSE:")
-        print(response.text[:2000])
+
+        text = response.text
+
+        print("RIO COUNT:", text.lower().count("kia rio"))
+        print("PRICE COUNT:", text.count("700000"))
+
+        # Ищем ссылки Avito на объявления
+        links = re.findall(
+            r'https?://(?:www\.)?avito\.ru/[^\s"<>]+',
+            text
+        )
+
+        print("AVITO LINKS FOUND:", len(links))
+
+        unique_links = []
+
+        for link in links:
+            link = link.replace("\\/", "/")
+
+            if "/moskva/avtomobili/" in link and link not in unique_links:
+                unique_links.append(link)
+
+        print("CAR LINKS FOUND:", len(unique_links))
+
+        print("===== FIRST CAR LINKS =====")
+
+        for link in unique_links[:10]:
+            print(link[:500])
+
+        print("===== AVITO RESPONSE SAMPLE =====")
+        print(text[:500])
+        print("===== AVITO TEST END =====")
 
     except Exception as e:
         print("AVITO ERROR:", repr(e))
 
-    print("===== AVITO TEST END =====")
+    print("===== AVITO TEST FINISHED =====")
 
 
 def load_radars():
@@ -73,7 +103,12 @@ def load_radars():
 
 def save_radars(radars):
     with open(RADARS_FILE, "w", encoding="utf-8") as file:
-        json.dump(radars, file, ensure_ascii=False, indent=2)
+        json.dump(
+            radars,
+            file,
+            ensure_ascii=False,
+            indent=2
+        )
 
 
 def extract_parameters(text):
@@ -89,7 +124,9 @@ def extract_parameters(text):
     )
 
     if price_match:
-        price = int(price_match.group(1).replace(" ", ""))
+        price = int(
+            price_match.group(1).replace(" ", "")
+        )
 
     year_match = re.search(
         r"от\s*(20\d{2})\s*(?:года|г)?",
@@ -107,7 +144,9 @@ def extract_parameters(text):
     )
 
     if mileage_match:
-        mileage = int(mileage_match.group(1).replace(" ", ""))
+        mileage = int(
+            mileage_match.group(1).replace(" ", "")
+        )
 
     cities = [
         "Москва",
@@ -132,7 +171,11 @@ def extract_parameters(text):
             city = city_name
             break
 
-    parts = [part.strip() for part in text.split(",")]
+    parts = [
+        part.strip()
+        for part in text.split(",")
+    ]
+
     car = parts[0] if parts else text
 
     return {
@@ -193,32 +236,43 @@ async def radars(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     message = "🚨 ТВОИ РАДАРЫ\n\n"
 
-    for index, radar_data in enumerate(user_radars, start=1):
+    for index, radar_data in enumerate(
+        user_radars,
+        start=1
+    ):
         price = radar_data.get("price")
         mileage = radar_data.get("mileage")
+
+        if price:
+            price_text = f"{price:,}".replace(",", " ")
+        else:
+            price_text = "—"
+
+        if mileage:
+            mileage_text = f"{mileage:,}".replace(",", " ")
+        else:
+            mileage_text = "—"
 
         message += (
             f"🔎 Радар #{index}\n"
             f"🚗 {radar_data.get('car', '—')}\n"
-            f"💰 до {price:,} ₽\n".replace(",", " ")
-        )
-
-        message += (
+            f"💰 до {price_text} ₽\n"
             f"📅 от {radar_data.get('year', '—')}\n"
-            f"📏 до {mileage:,} км\n".replace(",", " ")
-            if mileage
-            else "📏 пробег —\n"
+            f"📏 до {mileage_text} км\n"
+            f"📍 {radar_data.get('city', '—')}\n\n"
         )
-
-        message += f"📍 {radar_data.get('city', '—')}\n\n"
 
     await update.message.reply_text(message)
 
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_message(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
     text = update.message.text.strip()
 
     if context.user_data.get("creating_radar"):
+
         radar_data = extract_parameters(text)
 
         user_id = str(update.effective_user.id)
@@ -234,42 +288,78 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         context.user_data["creating_radar"] = False
 
+        price = radar_data["price"]
+        mileage = radar_data["mileage"]
+
+        price_text = (
+            f"{price:,}".replace(",", " ")
+            if price else "—"
+        )
+
+        mileage_text = (
+            f"{mileage:,}".replace(",", " ")
+            if mileage else "—"
+        )
+
         await update.message.reply_text(
             "✅ РАДАР СОЗДАН!\n\n"
             f"🚗 {radar_data['car']}\n"
-            f"💰 До {radar_data['price']:,} ₽\n".replace(",", " ")
-            + f"📅 От {radar_data['year']} года\n"
-            + f"📏 До {radar_data['mileage']:,} км\n".replace(",", " ")
-            + f"📍 {radar_data['city']}\n\n"
+            f"💰 До {price_text} ₽\n"
+            f"📅 От {radar_data['year']} года\n"
+            f"📏 До {mileage_text} км\n"
+            f"📍 {radar_data['city']}\n\n"
             "🔔 Запрос сохранён.\n\n"
-            "Следующий этап — автоматический мониторинг "
-            "новых объявлений."
+            "Следующий этап — автоматический "
+            "мониторинг новых объявлений."
         )
 
         return
 
     await update.message.reply_text(
         "🤔 Я не понял команду.\n\n"
-        "Используй /radar, чтобы создать автоматический поиск."
+        "Используй /radar, чтобы создать "
+        "автоматический поиск."
     )
 
 
 def main():
-    if not TOKEN:
-        raise RuntimeError("TELEGRAM_BOT_TOKEN не задан")
 
-    # Тест Avito
+    if not TOKEN:
+        raise RuntimeError(
+            "TELEGRAM_BOT_TOKEN не задан"
+        )
+
+    # Проверяем доступ к Avito
     test_avito()
 
-    # Запускаем веб-сервер для Render
-    threading.Thread(target=run_web, daemon=True).start()
+    # Запускаем веб-сервер Render
+    threading.Thread(
+        target=run_web,
+        daemon=True
+    ).start()
 
-    telegram_app = Application.builder().token(TOKEN).build()
+    telegram_app = (
+        Application
+        .builder()
+        .token(TOKEN)
+        .build()
+    )
 
-    telegram_app.add_handler(CommandHandler("start", start))
-    telegram_app.add_handler(CommandHandler("help", help_command))
-    telegram_app.add_handler(CommandHandler("radar", radar))
-    telegram_app.add_handler(CommandHandler("radars", radars))
+    telegram_app.add_handler(
+        CommandHandler("start", start)
+    )
+
+    telegram_app.add_handler(
+        CommandHandler("help", help_command)
+    )
+
+    telegram_app.add_handler(
+        CommandHandler("radar", radar)
+    )
+
+    telegram_app.add_handler(
+        CommandHandler("radars", radars)
+    )
 
     telegram_app.add_handler(
         MessageHandler(
