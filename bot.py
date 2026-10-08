@@ -1,4 +1,3 @@
-# AVITO STRUCTURE TEST
 import os
 import re
 import json
@@ -34,7 +33,7 @@ def run_web():
 
 
 def test_avito():
-    print("===== AVITO TEST START =====")
+    print("===== NEW AVITO TEST =====")
 
     headers = {
         "User-Agent": (
@@ -50,45 +49,63 @@ def test_avito():
             timeout=20
         )
 
-        print("AVITO STATUS:", response.status_code)
-        print("AVITO LENGTH:", len(response.text))
-
         text = response.text
 
-        print("RIO COUNT:", text.lower().count("kia rio"))
-        print("PRICE COUNT:", text.count("700000"))
+        print("NEW AVITO STATUS:", response.status_code)
+        print("NEW AVITO LENGTH:", len(text))
+        print("NEW RIO COUNT:", text.lower().count("kia rio"))
 
-        # Ищем ссылки Avito на объявления
-        links = re.findall(
-            r'https?://(?:www\.)?avito\.ru/[^\s"<>]+',
-            text
-        )
+        markers = [
+            "__NEXT_DATA__",
+            "itemId",
+            "item_id",
+            "price",
+            "mileage",
+            "vehicle",
+            "year",
+            "location",
+            "title"
+        ]
 
-        print("AVITO LINKS FOUND:", len(links))
+        print("===== NEW DATA MARKERS =====")
 
-        unique_links = []
+        for marker in markers:
+            count = text.lower().count(marker.lower())
+            print(f"NEW {marker}: {count}")
 
-        for link in links:
-            link = link.replace("\\/", "/")
+        print("===== NEW ITEMID SAMPLES =====")
 
-            if "/moskva/avtomobili/" in link and link not in unique_links:
-                unique_links.append(link)
+        positions = []
+        start = 0
 
-        print("CAR LINKS FOUND:", len(unique_links))
+        while True:
+            position = text.find("itemId", start)
 
-        print("===== FIRST CAR LINKS =====")
+            if position == -1:
+                break
 
-        for link in unique_links[:10]:
-            print(link[:500])
+            positions.append(position)
+            start = position + 6
 
-        print("===== AVITO RESPONSE SAMPLE =====")
-        print(text[:500])
-        print("===== AVITO TEST END =====")
+            if len(positions) >= 3:
+                break
+
+        print("NEW ITEMID POSITIONS:", positions)
+
+        for index, position in enumerate(positions, start=1):
+            print(f"===== NEW SAMPLE {index} =====")
+
+            sample_start = max(0, position - 300)
+            sample_end = min(len(text), position + 1000)
+
+            print(text[sample_start:sample_end])
+
+        print("===== NEW AVITO TEST END =====")
 
     except Exception as e:
-        print("AVITO ERROR:", repr(e))
+        print("NEW AVITO ERROR:", repr(e))
 
-    print("===== AVITO TEST FINISHED =====")
+    print("===== NEW AVITO TEST FINISHED =====")
 
 
 def load_radars():
@@ -172,11 +189,7 @@ def extract_parameters(text):
             city = city_name
             break
 
-    parts = [
-        part.strip()
-        for part in text.split(",")
-    ]
-
+    parts = [part.strip() for part in text.split(",")]
     car = parts[0] if parts else text
 
     return {
@@ -237,22 +250,20 @@ async def radars(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     message = "🚨 ТВОИ РАДАРЫ\n\n"
 
-    for index, radar_data in enumerate(
-        user_radars,
-        start=1
-    ):
+    for index, radar_data in enumerate(user_radars, start=1):
+
         price = radar_data.get("price")
         mileage = radar_data.get("mileage")
 
-        if price:
-            price_text = f"{price:,}".replace(",", " ")
-        else:
-            price_text = "—"
+        price_text = (
+            f"{price:,}".replace(",", " ")
+            if price else "—"
+        )
 
-        if mileage:
-            mileage_text = f"{mileage:,}".replace(",", " ")
-        else:
-            mileage_text = "—"
+        mileage_text = (
+            f"{mileage:,}".replace(",", " ")
+            if mileage else "—"
+        )
 
         message += (
             f"🔎 Радар #{index}\n"
@@ -266,10 +277,8 @@ async def radars(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(message)
 
 
-async def handle_message(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
     text = update.message.text.strip()
 
     if context.user_data.get("creating_radar"):
@@ -330,10 +339,8 @@ def main():
             "TELEGRAM_BOT_TOKEN не задан"
         )
 
-    # Проверяем доступ к Avito
     test_avito()
 
-    # Запускаем веб-сервер Render
     threading.Thread(
         target=run_web,
         daemon=True
