@@ -3,6 +3,7 @@ import re
 import json
 import threading
 import requests
+from html import unescape
 
 from flask import Flask
 from telegram import Update
@@ -29,12 +30,41 @@ def home():
 
 def run_web():
     port = int(os.getenv("PORT", 10000))
-    app_web.run(host="0.0.0.0", port=port)
+    app_web.run(
+        host="0.0.0.0",
+        port=port
+    )
+
+
+def clean_text(value):
+
+    if not value:
+        return ""
+
+    value = unescape(value)
+
+    value = value.replace(
+        "\xa0",
+        " "
+    )
+
+    value = value.replace(
+        "\\/",
+        "/"
+    )
+
+    value = re.sub(
+        r"\s+",
+        " ",
+        value
+    )
+
+    return value.strip()
 
 
 def get_avito_ads():
 
-    print("===== AVITO DEEP DIAGNOSTIC START =====")
+    print("===== AVITO PARSER START =====")
 
     headers = {
         "User-Agent": (
@@ -53,10 +83,17 @@ def get_avito_ads():
 
         text = response.text
 
-        print("AVITO STATUS:", response.status_code)
-        print("AVITO HTML LENGTH:", len(text))
+        print(
+            "AVITO STATUS:",
+            response.status_code
+        )
 
-        # Ищем ID объявлений
+        print(
+            "AVITO HTML LENGTH:",
+            len(text)
+        )
+
+        # Ищем все ID объявлений
         item_ids = re.findall(
             r'itemId[=:]\\?["\']?(\d{8,})',
             text
@@ -69,21 +106,17 @@ def get_avito_ads():
             if item_id not in unique_ids:
                 unique_ids.append(item_id)
 
-        print("UNIQUE ITEM IDS:", len(unique_ids))
+        print(
+            "UNIQUE ITEM IDS:",
+            len(unique_ids)
+        )
 
-        # Берём первые 3 объявления
-        for number, item_id in enumerate(
-            unique_ids[:3],
-            start=1
-        ):
+        ads = []
 
-            print("")
-            print("========================================")
-            print("AD:", number)
-            print("ID:", item_id)
-            print("========================================")
+        # Работаем с каждым объявлением
+        for item_id in unique_ids:
 
-            # Ищем ВСЕ позиции этого ID
+            # Ищем позицию ID
             positions = [
                 match.start()
                 for match in re.finditer(
@@ -92,199 +125,276 @@ def get_avito_ads():
                 )
             ]
 
-            print("ID POSITIONS:", positions[:20])
-            print("TOTAL POSITIONS:", len(positions))
-
             if not positions:
                 continue
 
-            # Берём первую позицию
-            position = positions[0]
+            best_block = None
+            best_title = None
+            best_href = None
 
-            print("FIRST POSITION:", position)
+            # Проверяем несколько позиций ID.
+            # Нам нужна та, рядом с которой есть
+            # title="Kia Rio ..."
+            for position in positions:
 
-            # Показываем большой кусок HTML
-            block_start = max(
-                0,
-                position - 15000
-            )
-
-            block_end = min(
-                len(text),
-                position + 30000
-            )
-
-            block = text[
-                block_start:block_end
-            ]
-
-            print("BLOCK LENGTH:", len(block))
-
-            # --------------------------------
-            # ИЩЕМ IMAGE ALT
-            # --------------------------------
-
-            print("")
-            print("----- IMAGE ALT -----")
-
-            image_alt_matches = re.findall(
-                r'"imageAlt"\s*:\s*"([^"]+)"',
-                block
-            )
-
-            print(
-                "IMAGE ALT COUNT:",
-                len(image_alt_matches)
-            )
-
-            for value in image_alt_matches[:10]:
-
-                print(
-                    "IMAGE ALT:",
-                    value
+                block_start = max(
+                    0,
+                    position - 5000
                 )
 
-            # --------------------------------
-            # ИЩЕМ TITLE
-            # --------------------------------
-
-            print("")
-            print("----- TITLE -----")
-
-            title_matches = re.findall(
-                r'"title"\s*:\s*"([^"]+)"',
-                block
-            )
-
-            print(
-                "TITLE COUNT:",
-                len(title_matches)
-            )
-
-            for value in title_matches[:10]:
-
-                print(
-                    "TITLE:",
-                    value
+                block_end = min(
+                    len(text),
+                    position + 5000
                 )
 
-            # --------------------------------
-            # ИЩЕМ PRICE
-            # --------------------------------
+                block = text[
+                    block_start:block_end
+                ]
 
-            print("")
-            print("----- PRICE -----")
+                title_matches = re.findall(
+                    r'<a[^>]+title="([^"]+)"[^>]*data-marker="item/link"',
+                    block
+                )
 
+                if title_matches:
+
+                    for candidate in title_matches:
+
+                        candidate = clean_text(
+                            candidate
+                        )
+
+                        if (
+                            "Kia Rio" in candidate
+                            or "Kia" in candidate
+                            or "Rio" in candidate
+                        ):
+
+                            best_block = block
+                            best_title = candidate
+
+                            href_match = re.search(
+                                r'<a[^>]+title="'
+                                + re.escape(candidate)
+                                + r'"[^>]+href="([^"]+)"',
+                                block
+                            )
+
+                            if href_match:
+
+                                best_href = (
+                                    href_match.group(1)
+                                )
+
+                            break
+
+                if best_title:
+                    break
+
+            if not best_title:
+                continue
+
+            # -------------------------
+            # ЦЕНА
+            # -------------------------
+
+            price = None
+
+            # Ищем цены рядом с карточкой
             price_matches = re.findall(
-                r'"current"\s*:\s*"([^"]+)"',
-                block
+                r'(\d[\d\xa0\s]{2,})\s*₽',
+                best_block
             )
 
-            print(
-                "PRICE CURRENT COUNT:",
-                len(price_matches)
-            )
+            clean_prices = []
 
-            for value in price_matches[:10]:
+            for price_value in price_matches:
 
-                print(
-                    "PRICE:",
-                    value
+                price_value = (
+                    price_value
+                    .replace("\xa0", "")
+                    .replace(" ", "")
                 )
 
-            # --------------------------------
-            # ИЩЕМ 2016-2026 ГОДЫ
-            # --------------------------------
+                if price_value.isdigit():
 
-            print("")
-            print("----- YEARS -----")
+                    number = int(
+                        price_value
+                    )
 
-            years = re.findall(
-                r'\b20(?:1[6-9]|2[0-6])\b',
-                block
+                    # Отбрасываем мелкие значения
+                    if number >= 100000:
+
+                        clean_prices.append(
+                            number
+                        )
+
+            if clean_prices:
+
+                # Берём первую нормальную цену
+                price = clean_prices[0]
+
+            # -------------------------
+            # ГОД
+            # -------------------------
+
+            year_match = re.search(
+                r'\b(20\d{2})\b',
+                best_title
             )
 
-            print(
-                "YEARS FOUND:",
-                years[:30]
-            )
+            year = None
 
-            # --------------------------------
-            # ИЩЕМ ПРОБЕГ
-            # --------------------------------
+            if year_match:
 
-            print("")
-            print("----- MILEAGE -----")
+                year = int(
+                    year_match.group(1)
+                )
 
-            mileage = re.findall(
-                r'(\d[\d\s]{2,})\s*км',
-                block,
+            # -------------------------
+            # ПРОБЕГ
+            # -------------------------
+
+            mileage_match = re.search(
+                r'([\d\s\xa0]+)\s*км',
+                best_title,
                 re.IGNORECASE
             )
 
-            print(
-                "MILEAGE FOUND:",
-                mileage[:30]
-            )
+            mileage = None
 
-            # --------------------------------
-            # ИЩЕМ ФРАЗЫ С KIA RIO
-            # --------------------------------
+            if mileage_match:
 
-            print("")
-            print("----- KIA RIO -----")
-
-            rio_matches = re.findall(
-                r'.{0,100}Kia Rio.{0,200}',
-                block,
-                re.IGNORECASE
-            )
-
-            print(
-                "KIA RIO COUNT:",
-                len(rio_matches)
-            )
-
-            for value in rio_matches[:10]:
-
-                print(
-                    "RIO:",
-                    value
+                mileage_text = (
+                    mileage_match.group(1)
+                    .replace("\xa0", "")
+                    .replace(" ", "")
                 )
 
-            # --------------------------------
-            # ИЩЕМ ЦЕНЫ С ₽
-            # --------------------------------
+                if mileage_text.isdigit():
 
-            print("")
-            print("----- RUBLE PRICES -----")
+                    mileage = int(
+                        mileage_text
+                    )
 
-            ruble_prices = re.findall(
-                r'\d[\d\s]{2,}\s*₽',
-                block
-            )
+            # -------------------------
+            # ГОРОД
+            # -------------------------
 
-            print(
-                "RUBLE PRICE COUNT:",
-                len(ruble_prices)
-            )
+            city = "Москва"
 
-            for value in ruble_prices[:20]:
+            if (
+                best_href
+                and "moskva_zelenograd" in best_href
+            ):
 
-                print(
-                    "RUBLE PRICE:",
-                    value
+                city = "Москва, Зеленоград"
+
+            # -------------------------
+            # ССЫЛКА
+            # -------------------------
+
+            if best_href:
+
+                if best_href.startswith(
+                    "http"
+                ):
+
+                    url = best_href
+
+                else:
+
+                    url = (
+                        "https://www.avito.ru"
+                        + best_href
+                    )
+
+            else:
+
+                url = (
+                    "https://www.avito.ru/"
+                    "moskva/avtomobili/"
+                    + item_id
                 )
+
+            ad = {
+                "id": item_id,
+                "title": best_title,
+                "price": price,
+                "year": year,
+                "mileage": mileage,
+                "city": city,
+                "url": url,
+            }
+
+            ads.append(ad)
 
         print("")
-        print("===== AVITO DEEP DIAGNOSTIC END =====")
+        print(
+            "===== FOUND ADS:",
+            len(ads),
+            "====="
+        )
 
-        return unique_ids
+        # Показываем первые 10
+        for index, ad in enumerate(
+            ads[:10],
+            start=1
+        ):
+
+            print("")
+            print(
+                "----- AD #",
+                index,
+                "-----"
+            )
+
+            print(
+                "ID:",
+                ad["id"]
+            )
+
+            print(
+                "TITLE:",
+                ad["title"]
+            )
+
+            print(
+                "PRICE:",
+                ad["price"]
+            )
+
+            print(
+                "YEAR:",
+                ad["year"]
+            )
+
+            print(
+                "MILEAGE:",
+                ad["mileage"]
+            )
+
+            print(
+                "CITY:",
+                ad["city"]
+            )
+
+            print(
+                "URL:",
+                ad["url"]
+            )
+
+        print("")
+        print(
+            "===== AVITO PARSER END ====="
+        )
+
+        return ads
 
     except Exception as e:
 
         print(
-            "AVITO ERROR:",
+            "AVITO PARSER ERROR:",
             repr(e)
         )
 
@@ -293,7 +403,10 @@ def get_avito_ads():
 
 def load_radars():
 
-    if not os.path.exists(RADARS_FILE):
+    if not os.path.exists(
+        RADARS_FILE
+    ):
+
         return {}
 
     try:
@@ -341,8 +454,11 @@ def extract_parameters(text):
     )
 
     if price_match:
+
         price = int(
-            price_match.group(1).replace(" ", "")
+            price_match
+            .group(1)
+            .replace(" ", "")
         )
 
     year_match = re.search(
@@ -352,6 +468,7 @@ def extract_parameters(text):
     )
 
     if year_match:
+
         year = int(
             year_match.group(1)
         )
@@ -363,8 +480,11 @@ def extract_parameters(text):
     )
 
     if mileage_match:
+
         mileage = int(
-            mileage_match.group(1).replace(" ", "")
+            mileage_match
+            .group(1)
+            .replace(" ", "")
         )
 
     cities = [
@@ -397,7 +517,11 @@ def extract_parameters(text):
         for part in text.split(",")
     ]
 
-    car = parts[0] if parts else text
+    car = (
+        parts[0]
+        if parts
+        else text
+    )
 
     return {
         "car": car,
@@ -444,7 +568,9 @@ async def radar(
     context: ContextTypes.DEFAULT_TYPE
 ):
 
-    context.user_data["creating_radar"] = True
+    context.user_data[
+        "creating_radar"
+    ] = True
 
     await update.message.reply_text(
         "🚨 СОЗДАНИЕ РАДАРА\n\n"
@@ -482,7 +608,9 @@ async def radars(
 
         return
 
-    message = "🚨 ТВОИ РАДАРЫ\n\n"
+    message = (
+        "🚨 ТВОИ РАДАРЫ\n\n"
+    )
 
     for index, radar_data in enumerate(
         user_radars,
@@ -499,12 +627,14 @@ async def radars(
 
         price_text = (
             f"{price:,}".replace(",", " ")
-            if price else "—"
+            if price
+            else "—"
         )
 
         mileage_text = (
             f"{mileage:,}".replace(",", " ")
-            if mileage else "—"
+            if mileage
+            else "—"
         )
 
         message += (
@@ -543,6 +673,7 @@ async def handle_message(
         all_radars = load_radars()
 
         if user_id not in all_radars:
+
             all_radars[user_id] = []
 
         all_radars[user_id].append(
@@ -562,12 +693,14 @@ async def handle_message(
 
         price_text = (
             f"{price:,}".replace(",", " ")
-            if price else "—"
+            if price
+            else "—"
         )
 
         mileage_text = (
             f"{mileage:,}".replace(",", " ")
-            if mileage else "—"
+            if mileage
+            else "—"
         )
 
         await update.message.reply_text(
@@ -597,8 +730,10 @@ def main():
             "TELEGRAM_BOT_TOKEN не задан"
         )
 
+    # Тестируем Avito при запуске
     get_avito_ads()
 
+    # Запускаем веб-сервер для Render
     threading.Thread(
         target=run_web,
         daemon=True
@@ -648,7 +783,7 @@ def main():
     )
 
     print(
-        "AUTO RADAR BOT запущен"
+        "AUTO RADAR BOT ЗАПУЩЕН"
     )
 
     telegram_app.run_polling()
