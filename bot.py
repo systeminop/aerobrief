@@ -26,6 +26,9 @@ RADARS_FILE = "radars.json"
 USERS_FILE = "users.json"
 SEEN_FILE = "seen_ads.json"
 
+# Последние запросы пользователей
+LAST_REQUESTS_FILE = "last_requests.json"
+
 CHECK_INTERVAL = 5 * 60
 MAX_NEW_AGE_SECONDS = 5 * 60
 
@@ -112,6 +115,62 @@ def save_json(filename, data):
             )
     except Exception as e:
         print(f"JSON SAVE ERROR {filename}: {e}")
+
+
+# =========================================================
+# ПОСЛЕДНИЙ ЗАПРОС
+# =========================================================
+
+def save_last_request(user_id, original_text, radar):
+    """
+    Сохраняет последний полный запрос пользователя.
+    Хранится на диске, поэтому не пропадает после
+    перезапуска Python/Render.
+    """
+
+    try:
+        requests_data = load_json(
+            LAST_REQUESTS_FILE,
+            {}
+        )
+
+        requests_data[str(user_id)] = {
+            "text": original_text,
+            "radar": radar,
+            "saved_at": time.time(),
+        }
+
+        save_json(
+            LAST_REQUESTS_FILE,
+            requests_data
+        )
+
+        print(
+            "💾 ПОСЛЕДНИЙ ЗАПРОС СОХРАНЁН:",
+            user_id,
+            original_text
+        )
+
+    except Exception as e:
+        print(
+            "❌ ERROR SAVING LAST REQUEST:",
+            e
+        )
+
+
+def get_last_request(user_id):
+    """
+    Получает последний сохранённый запрос пользователя.
+    """
+
+    requests_data = load_json(
+        LAST_REQUESTS_FILE,
+        {}
+    )
+
+    return requests_data.get(
+        str(user_id)
+    )
 
 
 # =========================================================
@@ -446,8 +505,6 @@ def get_avito_ads(radar):
 
                         if mileage is not None:
 
-                            # Если указано "тыс. км",
-                            # переводим в километры
                             if "тыс" in mileage_match.group(0).lower():
                                 mileage *= 1000
 
@@ -659,7 +716,6 @@ def matches_radar(ad, radar):
 
     mileage = ad.get("mileage")
 
-    # Пробег ДО
     mileage_to = radar.get("mileage_to")
 
     if mileage_to is not None:
@@ -670,7 +726,6 @@ def matches_radar(ad, radar):
         if mileage > mileage_to:
             return False
 
-    # Пробег ОТ
     mileage_from = radar.get("mileage_from")
 
     if mileage_from is not None:
@@ -689,7 +744,6 @@ def matches_radar(ad, radar):
 
     if radar_city:
 
-        # Если стоит "Россия", не фильтруем
         if radar_city.lower() not in [
             "россия",
             "вся россия",
@@ -721,11 +775,9 @@ def is_new_ad(ad):
 
     age = now - published_at
 
-    # Будущее с небольшим запасом
     if age < -120:
         return False
 
-    # Старше 5 минут
     if age > MAX_NEW_AGE_SECONDS:
         return False
 
@@ -833,6 +885,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Команды:\n"
         "/radar — создать радар\n"
         "/radars — мои радары\n"
+        "/last — вернуть последний запрос\n"
         "/delete 2 — удалить радар №2\n"
         "/test — тест уведомлений\n"
         "/status — состояние бота\n"
@@ -855,6 +908,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/radars\n"
         "Показать все мои радары.\n\n"
 
+        "/last\n"
+        "Вернуть последний полный запрос.\n\n"
+
         "/delete 2\n"
         "Удалить радар №2.\n\n"
 
@@ -871,6 +927,97 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Можно также указать минимальный пробег:\n"
         "Kia Rio, до 700000, от 2016, "
         "пробег от 100000, Москва"
+    )
+
+
+# =========================================================
+# /LAST
+# =========================================================
+
+async def last_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    user_id = update.effective_user.id
+
+    last_request = get_last_request(user_id)
+
+    if not last_request:
+
+        await update.message.reply_text(
+            "📭 Последнего запроса пока нет."
+        )
+
+        return
+
+    original_text = last_request.get(
+        "text",
+        ""
+    )
+
+    radar = last_request.get(
+        "radar",
+        {}
+    )
+
+    text = (
+        "🔄 ПОСЛЕДНИЙ ЗАПРОС\n\n"
+        f"{original_text}\n\n"
+        "📋 Параметры сохранённого радара:\n"
+        f"🚘 {radar.get('car', '—')}\n"
+    )
+
+    if radar.get("price_from") is not None:
+        text += (
+            f"💰 Цена от: "
+            f"{radar['price_from']:,} ₽\n"
+            .replace(",", " ")
+        )
+
+    if radar.get("price_to") is not None:
+        text += (
+            f"💰 Цена до: "
+            f"{radar['price_to']:,} ₽\n"
+            .replace(",", " ")
+        )
+
+    if radar.get("year_from") is not None:
+        text += (
+            f"📅 Год от: "
+            f"{radar['year_from']}\n"
+        )
+
+    if radar.get("year_to") is not None:
+        text += (
+            f"📅 Год до: "
+            f"{radar['year_to']}\n"
+        )
+
+    if radar.get("mileage_from") is not None:
+        text += (
+            f"🛣 Пробег от: "
+            f"{radar['mileage_from']:,} км\n"
+            .replace(",", " ")
+        )
+
+    if radar.get("mileage_to") is not None:
+        text += (
+            f"🛣 Пробег до: "
+            f"{radar['mileage_to']:,} км\n"
+            .replace(",", " ")
+        )
+
+    if radar.get("city"):
+        text += (
+            f"📍 Город: "
+            f"{radar['city']}\n"
+        )
+
+    text += (
+        "\n⬆️ Скопируй строку выше и отправь её боту, "
+        "если хочешь восстановить этот радар."
+    )
+
+    await update.message.reply_text(
+        text
     )
 
 
@@ -1143,8 +1290,6 @@ async def handle_message(
 
         # =================================================
         # ПРОБЕГ
-        # Проверяем ПЕРВЫМ, чтобы "пробег до 200000"
-        # никогда не воспринимался как цена.
         # =================================================
 
         if (
@@ -1157,12 +1302,10 @@ async def handle_message(
 
             if number:
 
-                # Пробег ДО
                 if "до" in low:
                     radar["mileage_to"] = number
                     continue
 
-                # Пробег ОТ
                 if "от" in low:
                     radar["mileage_from"] = number
                     continue
@@ -1216,7 +1359,6 @@ async def handle_message(
 
             if number:
 
-                # 2011 уже обработан как год
                 if not (1900 <= number <= 2030):
 
                     radar["price_from"] = number
@@ -1248,7 +1390,17 @@ async def handle_message(
         radar["city"] = "Россия"
 
     # -----------------------------------------------------
-    # Сохраняем
+    # СОХРАНЯЕМ ПОСЛЕДНИЙ ПОЛНЫЙ ЗАПРОС
+    # -----------------------------------------------------
+
+    save_last_request(
+        user_id,
+        text,
+        radar
+    )
+
+    # -----------------------------------------------------
+    # Сохраняем радар
     # -----------------------------------------------------
 
     radars = get_user_radars(user_id)
@@ -1322,7 +1474,9 @@ async def handle_message(
     text_reply += (
         "\n⏱ Проверка каждые 5 минут.\n"
         "🆕 Отправляются только объявления "
-        "моложе 5 минут."
+        "моложе 5 минут.\n\n"
+        "💾 Последний запрос сохранён.\n"
+        "Если бот перезапустится — введи /last"
     )
 
     await update.message.reply_text(
@@ -1441,7 +1595,6 @@ async def monitor_job(
                 if seen_key in seen:
                     continue
 
-                # Получаем описание
                 description = get_ad_description(
                     ad
                 )
@@ -1569,6 +1722,7 @@ def main():
     print("⏱ Проверка каждые 5 минут")
     print("🇷🇺 Режим поиска: Вся Россия")
     print("🆕 Отправка: только свежие объявления")
+    print("💾 Сохранение последнего запроса: ВКЛ")
     print("====================================")
 
     with STATUS_LOCK:
@@ -1614,6 +1768,13 @@ def main():
         CommandHandler(
             "radars",
             radars_command
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "last",
+            last_command
         )
     )
 
